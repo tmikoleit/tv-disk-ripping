@@ -9,7 +9,11 @@ param(
 
     [string]$TMDbApiKey,
 
-    [switch]$AutoRename
+    [switch]$AutoRename,
+
+    [string]$EpisodeRange,
+
+    [string]$DiscDbUrl
 )
 
 $baseDir = "D:\Disk Ripping"
@@ -163,55 +167,6 @@ function Get-DiscDbEpisodeList {
     return $null
 }
 
-function Get-UserEpisodeRange {
-    param([int]$FileCount, [array]$AllEpisodes)
-
-    Write-Host ""
-    Write-Host "Could not auto-discover TheDiscDB entry." -ForegroundColor Yellow
-    Write-Host "You have $FileCount files on this disk." -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Options:" -ForegroundColor Cyan
-    Write-Host "1) Provide TheDiscDB URL manually" -ForegroundColor Gray
-    Write-Host "2) Enter episode numbers manually (e.g., 14-25)" -ForegroundColor Gray
-    Write-Host "3) Match across entire season ($($AllEpisodes.Count) episodes)" -ForegroundColor Gray
-    Write-Host ""
-
-    $choice = Read-Host "Enter choice (1-3)"
-
-    switch ($choice) {
-        "1" {
-            $url = Read-Host "Paste TheDiscDB URL"
-            if ($url) {
-                Write-Host "Fetching from $url..." -ForegroundColor Gray
-                $titles = Get-DiscDbEpisodeList -Url $url
-                if ($titles) {
-                    return @{ source = "DiscDB"; episodes = $titles }
-                } else {
-                    Write-Host "Could not fetch episode data from URL. Try option 2 instead." -ForegroundColor Yellow
-                    return Get-UserEpisodeRange -FileCount $FileCount -AllEpisodes $AllEpisodes
-                }
-            }
-        }
-        "2" {
-            $range = Read-Host "Enter episode range (e.g., 14-25)"
-            if ($range -match '^(\d+)-(\d+)$') {
-                $start = [int]$matches[1]
-                $end = [int]$matches[2]
-                return @{ source = "Manual"; range = @($start, $end) }
-            } else {
-                Write-Host "Invalid format. Try again." -ForegroundColor Yellow
-                return Get-UserEpisodeRange -FileCount $FileCount -AllEpisodes $AllEpisodes
-            }
-        }
-        "3" {
-            return @{ source = "Season"; allEpisodes = $true }
-        }
-        default {
-            Write-Host "Invalid choice. Using season-wide matching." -ForegroundColor Yellow
-            return @{ source = "Season"; allEpisodes = $true }
-        }
-    }
-}
 
 function Match-FilesToEpisodes {
     param(
@@ -374,36 +329,71 @@ foreach ($file in $files) {
 Write-Host ""
 
 # TIER 1: Try auto-discovery
-$discDbUrl = Invoke-DiscDbAutoDiscovery -ShowName $Show -Season $Season -Disk $Disk
 $episodesToMatch = $allEpisodes
 $matchSource = "Season-wide"
+$discDbUrlResolved = $null
 
-if ($discDbUrl) {
-    # Got DiscDB URL - use it
-    $titles = Get-DiscDbEpisodeList -Url $discDbUrl
+if (-not $DiscDbUrl) {
+    $discDbUrlResolved = Invoke-DiscDbAutoDiscovery -ShowName $Show -Season $Season -Disk $Disk
+}
+
+if ($discDbUrlResolved) {
+    # TIER 1 success: auto-discovered URL
+    $titles = Get-DiscDbEpisodeList -Url $discDbUrlResolved
     if ($titles -and $titles.Count -eq $files.Count) {
         $matchSource = "DiscDB (auto-discovered)"
         Write-Host "Using episodes from TheDiscDB ($($titles.Count) episodes)" -ForegroundColor Green
         Write-Host ""
     }
-} else {
-    # TIER 1 failed - ask user
-    $userChoice = Get-UserEpisodeRange -FileCount $files.Count -AllEpisodes $allEpisodes
-
-    if ($userChoice.source -eq "DiscDB") {
+} elseif ($DiscDbUrl) {
+    # TIER 2: Manual DiscDB URL provided
+    Write-Host "Using provided TheDiscDB URL..." -ForegroundColor Gray
+    $titles = Get-DiscDbEpisodeList -Url $DiscDbUrl
+    if ($titles) {
         $matchSource = "DiscDB (manual URL)"
-        Write-Host "Using episodes from TheDiscDB" -ForegroundColor Green
-    } elseif ($userChoice.source -eq "Manual") {
-        $start = $userChoice.range[0]
-        $end = $userChoice.range[1]
+        Write-Host "Using episodes from TheDiscDB ($($titles.Count) episodes)" -ForegroundColor Green
+        Write-Host ""
+    } else {
+        Write-Host "Error: Could not fetch episodes from provided DiscDB URL: $DiscDbUrl" -ForegroundColor Red
+        exit 1
+    }
+} elseif ($EpisodeRange) {
+    # TIER 2: Manual episode range provided
+    if ($EpisodeRange -match '^(\d+)-(\d+)$') {
+        $start = [int]$matches[1]
+        $end = [int]$matches[2]
         $episodesToMatch = $allEpisodes | Where-Object { $_.episode_number -ge $start -and $_.episode_number -le $end }
+
+        if ($episodesToMatch.Count -eq 0) {
+            Write-Host "Error: No episodes found in range $EpisodeRange for Season $Season" -ForegroundColor Red
+            exit 1
+        }
+
         $matchSource = "Manual range ($start-$end)"
         Write-Host "Scoped to episodes $start-$end" -ForegroundColor Green
+        Write-Host ""
     } else {
-        $matchSource = "Season-wide (fallback)"
-        Write-Host "Using all $($allEpisodes.Count) episodes for matching" -ForegroundColor Green
+        Write-Host "Error: Invalid episode range format: $EpisodeRange" -ForegroundColor Red
+        Write-Host "Expected format: -EpisodeRange ""14-25""" -ForegroundColor Yellow
+        exit 1
     }
+} else {
+    # TIER 3: No parameters provided and auto-discovery failed
     Write-Host ""
+    Write-Host "Error: Could not auto-discover TheDiscDB entry." -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Please provide one of the following parameters:" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  -DiscDbUrl ""<URL>""" -ForegroundColor Cyan
+    Write-Host "    Example: -DiscDbUrl ""https://thediscdb.com/series/breaking-bad/releases/...discs/s01d01""" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  -EpisodeRange ""<start>-<end>""" -ForegroundColor Cyan
+    Write-Host "    Example: -EpisodeRange ""14-25""" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "Full command example:" -ForegroundColor Yellow
+    Write-Host "  .\Generate-MappingFromMetadata.ps1 -Show ""Breaking Bad"" -Season 1 -Disk 1 -EpisodeRange ""1-7""" -ForegroundColor Gray
+    Write-Host ""
+    exit 1
 }
 
 Write-Host "Matching files to episodes by duration..." -ForegroundColor Gray
