@@ -446,9 +446,10 @@ if ($AutoRename) {
     foreach ($oldName in $mapping.Keys) {
         $oldPath = Join-Path $diskPath $oldName
         $newName = $mapping[$oldName]
+        $newPath = Join-Path $diskPath $newName
 
         if (Test-Path $oldPath) {
-            Rename-Item -Path $oldPath -NewName $newName
+            Move-Item -Path $oldPath -Destination $newPath -Force
             Write-Host "  [OK] $oldName -> $newName" -ForegroundColor Green
         }
     }
