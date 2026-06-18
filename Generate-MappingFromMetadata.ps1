@@ -9,6 +9,10 @@ param(
 
     [string]$TMDbApiKey,     # TMDb API key (or set as env var TMDB_API_KEY)
 
+    [string]$DiscDbUrl,      # TheDiscDB URL (optional, auto-discovered if not provided)
+
+    [string]$ManualEpisodes, # Manual episode range (e.g., "14-25") if disk info unavailable
+
     [switch]$AutoRename      # Auto-rename files after mapping
 )
 
@@ -111,6 +115,135 @@ function Get-TMDbEpisodes {
         Write-Host "Error fetching episodes from TMDb: $($_.Exception.Message)" -ForegroundColor Red
     }
 
+    return $null
+}
+
+function Get-DiscDbEpisodes {
+    param([string]$DiscDbUrl)
+
+    try {
+        $response = Invoke-WebRequest -Uri $DiscDbUrl -ErrorAction Stop
+        $html = $response.Content
+
+        # Extract episode list from HTML - look for numbered list items with episode names
+        $episodeMatches = [regex]::Matches($html, '<li[^>]*>.*?<strong>(\d+)\.\s*"([^"]+)"')
+
+        if ($episodeMatches.Count -eq 0) {
+            # Try alternative pattern
+            $episodeMatches = [regex]::Matches($html, '"([^"]+)"')
+        }
+
+        if ($episodeMatches.Count -gt 0) {
+            $episodes = @()
+            foreach ($match in $episodeMatches) {
+                $episodes += @{
+                    position = $episodes.Count + 1
+                    title = $match.Groups[2].Value
+                }
+            }
+            return $episodes
+        }
+    } catch {
+        Write-Host "Error fetching DiscDB page: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    return $null
+}
+
+function Invoke-DiscDbLookup {
+    param(
+        [string]$ShowName,
+        [int]$Season,
+        [int]$Disk
+    )
+
+    Write-Host "Attempting to find TheDiscDB entry for $ShowName Season $Season Disk $Disk..." -ForegroundColor Gray
+
+    # Common patterns for TheDiscDB URLs
+    $showSlug = $ShowName.ToLower() -replace '\s+', '-'
+    $commonPatterns = @(
+        "https://thediscdb.com/series/$showSlug-2009/releases/2018-complete-series-blu-ray/discs/s$('{0:D2}' -f $Season)d$('{0:D2}' -f $Disk)",
+        "https://thediscdb.com/series/$showSlug/releases/2018-complete-series-blu-ray/discs/s$('{0:D2}' -f $Season)d$('{0:D2}' -f $Disk)",
+        "https://thediscdb.com/series/$showSlug/releases/complete-series-blu-ray/discs/s$('{0:D2}' -f $Season)d$('{0:D2}' -f $Disk)"
+    )
+
+    foreach ($pattern in $commonPatterns) {
+        Write-Host "  Trying: $pattern" -ForegroundColor DarkGray
+        try {
+            $response = Invoke-WebRequest -Uri $pattern -ErrorAction SilentlyContinue
+            if ($response.StatusCode -eq 200) {
+                Write-Host "  ✓ Found!" -ForegroundColor Green
+                return $pattern
+            }
+        } catch {
+            # Continue to next pattern
+        }
+    }
+
+    return $null
+}
+
+function Get-DiskEpisodesFromDiscDb {
+    param(
+        [string]$DiscDbUrl,
+        [int]$FirstEpisodeNumber,
+        [array]$AllSeasonEpisodes
+    )
+
+    Write-Host "Fetching episode list from TheDiscDB..." -ForegroundColor Gray
+
+    try {
+        $response = Invoke-WebRequest -Uri $DiscDbUrl -ErrorAction Stop
+        $html = $response.Content
+
+        # Extract episode titles from the page
+        # Pattern: episode list items with quoted titles
+        $episodeMatches = [regex]::Matches($html, '"([^"]+)"', 'IgnoreCase')
+
+        if ($episodeMatches.Count -gt 0) {
+            $diskEpisodes = @()
+            for ($i = 0; $i -lt $episodeMatches.Count; $i++) {
+                $title = $episodeMatches[$i].Groups[1].Value
+                $epNum = $FirstEpisodeNumber + $i
+
+                # Find matching episode in the full season data
+                $matchedEp = $AllSeasonEpisodes | Where-Object { $_.episode_number -eq $epNum }
+                if ($matchedEp -and $matchedEp.name -eq $title) {
+                    $diskEpisodes += $matchedEp
+                }
+            }
+
+            if ($diskEpisodes.Count -gt 0) {
+                return $diskEpisodes
+            }
+        }
+    } catch {
+        Write-Host "Error reading DiscDB content: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    return $null
+}
+
+function Get-DiskEpisodesManually {
+    param([array]$AllSeasonEpisodes)
+
+    Write-Host ""
+    Write-Host "TheDiscDB lookup unavailable. Please provide episode numbers for this disk." -ForegroundColor Yellow
+    Write-Host "Example: 14-25 (for episodes 14 through 25)" -ForegroundColor Gray
+    $input = Read-Host "Episode range"
+
+    if ($input -match '^(\d+)-(\d+)$') {
+        $start = [int]$matches[1]
+        $end = [int]$matches[2]
+
+        $diskEpisodes = $AllSeasonEpisodes | Where-Object { $_.episode_number -ge $start -and $_.episode_number -le $end }
+
+        if ($diskEpisodes.Count -gt 0) {
+            return $diskEpisodes
+        }
+    }
+
+    Write-Host "Invalid range. Please use format: START-END" -ForegroundColor Red
     return $null
 }
 
@@ -246,6 +379,73 @@ if (-not $episodes) {
 Write-Host "Found $($episodes.Count) episodes on TMDb for Season $Season" -ForegroundColor Green
 Write-Host ""
 
+# Try to get disk-specific episodes from TheDiscDB
+$diskEpisodes = $null
+$diskSource = $null
+
+if ($ManualEpisodes) {
+    # User provided manual episode range
+    Write-Host "Using manual episode range: $ManualEpisodes" -ForegroundColor Gray
+    $diskEpisodes = Get-DiskEpisodesManually -AllSeasonEpisodes $episodes
+    $diskSource = "Manual"
+} elseif ($DiscDbUrl) {
+    # User provided DiscDB URL directly
+    Write-Host "Using provided DiscDB URL..." -ForegroundColor Gray
+    $diskEpisodes = Get-DiskEpisodesFromDiscDb -DiscDbUrl $DiscDbUrl -FirstEpisodeNumber 1 -AllSeasonEpisodes $episodes
+    $diskSource = "DiscDB (provided)"
+} else {
+    # Try to auto-discover DiscDB URL
+    $foundUrl = Invoke-DiscDbLookup -ShowName $Show -Season $Season -Disk $Disk
+    if ($foundUrl) {
+        $diskEpisodes = Get-DiskEpisodesFromDiscDb -DiscDbUrl $foundUrl -FirstEpisodeNumber 1 -AllSeasonEpisodes $episodes
+        $diskSource = "DiscDB (auto-found)"
+    } else {
+        # Ask user for URL or manual entry
+        Write-Host ""
+        Write-Host "Could not auto-discover TheDiscDB entry." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Options:" -ForegroundColor Cyan
+        Write-Host "1. Provide TheDiscDB URL manually" -ForegroundColor Gray
+        Write-Host "2. Enter episode numbers manually (e.g., 14-25)" -ForegroundColor Gray
+        Write-Host "3. Skip disk info and match across entire season" -ForegroundColor Gray
+        Write-Host ""
+
+        $choice = Read-Host "Enter choice (1-3)"
+
+        switch ($choice) {
+            "1" {
+                $url = Read-Host "TheDiscDB URL"
+                if ($url) {
+                    $diskEpisodes = Get-DiskEpisodesFromDiscDb -DiscDbUrl $url -FirstEpisodeNumber 1 -AllSeasonEpisodes $episodes
+                    $diskSource = "DiscDB (manual URL)"
+                }
+            }
+            "2" {
+                $diskEpisodes = Get-DiskEpisodesManually -AllSeasonEpisodes $episodes
+                $diskSource = "Manual"
+            }
+            "3" {
+                Write-Host "Proceeding with season-wide matching (no disk scoping)" -ForegroundColor Gray
+                $diskSource = "Season (no disk scoping)"
+            }
+            default {
+                Write-Host "Invalid choice. Proceeding with season-wide matching." -ForegroundColor Yellow
+                $diskSource = "Season (no disk scoping)"
+            }
+        }
+    }
+}
+
+# Use disk-specific episodes if available, otherwise use all season episodes
+$episodesToMatch = if ($diskEpisodes -and $diskEpisodes.Count -gt 0) { $diskEpisodes } else { $episodes }
+
+Write-Host ""
+Write-Host "Matching strategy: $diskSource" -ForegroundColor Cyan
+if ($diskEpisodes -and $diskEpisodes.Count -gt 0) {
+    Write-Host "Scoped to $($diskEpisodes.Count) episodes (E$($diskEpisodes[0].episode_number)-E$($diskEpisodes[-1].episode_number))" -ForegroundColor Green
+}
+Write-Host ""
+
 Write-Host "Analyzing ripped files..." -ForegroundColor Gray
 $files = Get-ChildItem -Path $diskPath -File -Filter "*.mkv"
 
@@ -280,7 +480,7 @@ foreach ($file in $files) {
 Write-Host ""
 Write-Host "Matching files to episodes by duration..." -ForegroundColor Gray
 
-$result = Match-FilesToEpisodes -FileInfos $fileInfos -FileInfosMs $fileInfosMs -Episodes $episodes
+$result = Match-FilesToEpisodes -FileInfos $fileInfos -FileInfosMs $fileInfosMs -Episodes $episodesToMatch
 
 Write-Host ""
 Write-Host "Matches:" -ForegroundColor Cyan
@@ -308,7 +508,7 @@ if ($result.unmatched.Count -gt 0) {
 
 Write-Host ""
 
-$mapping = Build-Mapping -Matches $result.matches -Episodes $episodes -Season $Season -ShowName $Show
+$mapping = Build-Mapping -Matches $result.matches -Episodes $episodesToMatch -Season $Season -ShowName $Show
 
 # Save mapping file
 $mappingsDir = (Join-Path $baseDir $Show) | Join-Path -ChildPath "mappings"
