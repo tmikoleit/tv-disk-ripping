@@ -1,36 +1,31 @@
 param(
     [Parameter(Mandatory=$true)]
-    [string]$Show,           # Show name (e.g., "Community")
+    [string]$Show,
 
     [Parameter(Mandatory=$true)]
-    [int]$Season,            # Season number (1-based)
+    [int]$Season,
 
-    [int]$Disk = 1,          # Disk number (optional, defaults to 1)
+    [int]$Disk = 1,
 
-    [string]$TMDbApiKey,     # TMDb API key (or set as env var TMDB_API_KEY)
+    [string]$TMDbApiKey,
 
-    [string]$EpisodeRange,   # Manual episode range (e.g., "14-25") if disk info unavailable
-
-    [switch]$AutoRename      # Auto-rename files after mapping
+    [switch]$AutoRename
 )
 
 $baseDir = "D:\Disk Ripping"
 
-# Get TMDb API key
 if (-not $TMDbApiKey) {
     $TMDbApiKey = $env:TMDB_API_KEY
 }
 
 if (-not $TMDbApiKey) {
     Write-Host "Error: TMDb API key required" -ForegroundColor Red
-    Write-Host "Set TMDB_API_KEY environment variable or pass -TMDbApiKey" -ForegroundColor Yellow
     exit 1
 }
 
 function Get-FileDuration {
     param([string]$FilePath, [bool]$IncludeMs = $false)
 
-    # Try ffprobe first (most accurate, supports milliseconds)
     $ffprobe = (Get-Command ffprobe -ErrorAction SilentlyContinue).Source
 
     if ($ffprobe) {
@@ -39,27 +34,23 @@ function Get-FileDuration {
             if ($json) {
                 $durationSecs = [double]$json
                 if ($IncludeMs) {
-                    return $durationSecs  # Returns float with millisecond precision
+                    return $durationSecs
                 } else {
-                    return [int]$durationSecs  # Returns integer seconds
+                    return [int]$durationSecs
                 }
             }
         } catch {
-            # Fall through to shell method
+            # Fall through
         }
     }
 
-    # Fallback: use Windows Shell.Application (no millisecond precision)
     try {
         $shell = New-Object -ComObject Shell.Application
         $folder = $shell.Namespace((Split-Path $FilePath))
         $file = $folder.ParseName((Split-Path $FilePath -Leaf))
-
-        # Duration is typically in field 27 for media files
         $duration = $file.ExtendedProperty("System.Media.Duration")
 
         if ($duration) {
-            # Duration is in 100-nanosecond intervals
             $durationSecs = [int]($duration / 10000000)
             if ($IncludeMs) {
                 $durationMs = $duration / 10000
@@ -116,30 +107,132 @@ function Get-TMDbEpisodes {
     return $null
 }
 
+function Invoke-DiscDbAutoDiscovery {
+    param(
+        [string]$ShowName,
+        [int]$Season,
+        [int]$Disk
+    )
+
+    Write-Host "Attempting to auto-discover TheDiscDB URL..." -ForegroundColor Gray
+
+    $showSlug = $ShowName.ToLower() -replace '\s+', '-'
+    $diskNum = $Disk.ToString("D2")
+    $seasonNum = $Season.ToString("D2")
+
+    $patterns = @(
+        "https://thediscdb.com/series/$showSlug-2009/releases/2018-complete-series-blu-ray/discs/s$($seasonNum)d$($diskNum)",
+        "https://thediscdb.com/series/$showSlug/releases/2018-complete-series-blu-ray/discs/s$($seasonNum)d$($diskNum)",
+        "https://thediscdb.com/series/$showSlug/releases/complete-series-blu-ray/discs/s$($seasonNum)d$($diskNum)"
+    )
+
+    foreach ($url in $patterns) {
+        try {
+            $response = Invoke-WebRequest -Uri $url -ErrorAction SilentlyContinue -TimeoutSec 5
+            if ($response.StatusCode -eq 200) {
+                Write-Host "Found: $url" -ForegroundColor Green
+                return $url
+            }
+        } catch {
+            # Continue to next pattern
+        }
+    }
+
+    return $null
+}
+
+function Get-DiscDbEpisodeList {
+    param([string]$Url)
+
+    try {
+        $response = Invoke-WebRequest -Uri $Url -ErrorAction Stop
+        $content = $response.Content
+
+        $matches = [regex]::Matches($content, '"([^"]+)"')
+        if ($matches.Count -gt 0) {
+            $titles = @()
+            foreach ($match in $matches) {
+                $titles += $match.Groups[1].Value
+            }
+            return $titles
+        }
+    } catch {
+        Write-Host "Error fetching DiscDB: $($_.Exception.Message)" -ForegroundColor Red
+    }
+
+    return $null
+}
+
+function Get-UserEpisodeRange {
+    param([int]$FileCount, [array]$AllEpisodes)
+
+    Write-Host ""
+    Write-Host "Could not auto-discover TheDiscDB entry." -ForegroundColor Yellow
+    Write-Host "You have $FileCount files on this disk." -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Options:" -ForegroundColor Cyan
+    Write-Host "1) Provide TheDiscDB URL manually" -ForegroundColor Gray
+    Write-Host "2) Enter episode numbers manually (e.g., 14-25)" -ForegroundColor Gray
+    Write-Host "3) Match across entire season ($($AllEpisodes.Count) episodes)" -ForegroundColor Gray
+    Write-Host ""
+
+    $choice = Read-Host "Enter choice (1-3)"
+
+    switch ($choice) {
+        "1" {
+            $url = Read-Host "Paste TheDiscDB URL"
+            if ($url) {
+                Write-Host "Fetching from $url..." -ForegroundColor Gray
+                $titles = Get-DiscDbEpisodeList -Url $url
+                if ($titles) {
+                    return @{ source = "DiscDB"; episodes = $titles }
+                } else {
+                    Write-Host "Could not fetch episode data from URL. Try option 2 instead." -ForegroundColor Yellow
+                    return Get-UserEpisodeRange -FileCount $FileCount -AllEpisodes $AllEpisodes
+                }
+            }
+        }
+        "2" {
+            $range = Read-Host "Enter episode range (e.g., 14-25)"
+            if ($range -match '^(\d+)-(\d+)$') {
+                $start = [int]$matches[1]
+                $end = [int]$matches[2]
+                return @{ source = "Manual"; range = @($start, $end) }
+            } else {
+                Write-Host "Invalid format. Try again." -ForegroundColor Yellow
+                return Get-UserEpisodeRange -FileCount $FileCount -AllEpisodes $AllEpisodes
+            }
+        }
+        "3" {
+            return @{ source = "Season"; allEpisodes = $true }
+        }
+        default {
+            Write-Host "Invalid choice. Using season-wide matching." -ForegroundColor Yellow
+            return @{ source = "Season"; allEpisodes = $true }
+        }
+    }
+}
+
 function Match-FilesToEpisodes {
     param(
-        [hashtable]$FileInfos,      # @{ filename = duration_in_seconds }
-        [hashtable]$FileInfosMs,    # @{ filename = duration_with_ms }
-        [array]$Episodes            # TMDb episodes array (same season only)
+        [hashtable]$FileInfos,
+        [hashtable]$FileInfosMs,
+        [array]$Episodes
     )
 
     $matches = @{}
     $unmatched = @()
     $ambiguous = @()
-    $tolerance = 90  # Allow 90 seconds variation (Blu-ray can differ from TV runtimes)
-    $matchedFiles = @()  # Track which files have been matched
-
-    # SCOPING: Episodes parameter contains ONLY episodes from the specific season requested
-    # This prevents cross-season or cross-show matching
+    $tolerance = 90
+    $matchedFiles = @()
 
     foreach ($episode in $Episodes) {
-        $episodeRuntime = $episode.runtime * 60  # Convert minutes to seconds
+        $episodeRuntime = $episode.runtime * 60
         $bestMatch = $null
         $bestDiff = $tolerance + 1
-        $matchesWithinTolerance = @()  # Track all matches within tolerance
+        $matchesWithinTolerance = @()
 
         foreach ($fileName in $FileInfos.Keys) {
-            # Skip files already matched to another episode
             if ($matchedFiles -contains $fileName) {
                 continue
             }
@@ -152,14 +245,12 @@ function Match-FilesToEpisodes {
                 $bestDiff = $diff
             }
 
-            # Track all matches within tolerance for ambiguity detection
             if ($diff -le $tolerance) {
                 $matchesWithinTolerance += @{ file = $fileName; diff = $diff; duration = $fileDuration; durationMs = $FileInfosMs[$fileName] }
             }
         }
 
         if ($bestMatch -and $bestDiff -le $tolerance) {
-            # Check if there are multiple files with identical (or near-identical) durations
             $identicalDurationFiles = $matchesWithinTolerance | Where-Object { [Math]::Abs($_.diff - $bestDiff) -lt 0.01 }
 
             if ($identicalDurationFiles.Count -gt 1) {
@@ -171,9 +262,9 @@ function Match-FilesToEpisodes {
             }
 
             $matches[$episode.episode_number] = $bestMatch
-            $matchedFiles += $bestMatch  # Mark this file as matched
+            $matchedFiles += $bestMatch
         } else {
-            $unmatched += "E$('{0:D2}' -f $episode.episode_number): Runtime $episodeRuntime`s (no file within ${tolerance}s tolerance)"
+            $unmatched += "E$('{0:D2}' -f $episode.episode_number): Runtime $episodeRuntime`s (no file within $tolerance`s tolerance)"
         }
     }
 
@@ -182,8 +273,8 @@ function Match-FilesToEpisodes {
 
 function Build-Mapping {
     param(
-        [hashtable]$Matches,        # @{ episode_number = filename }
-        [array]$Episodes,           # TMDb episodes
+        [hashtable]$Matches,
+        [array]$Episodes,
         [int]$Season,
         [string]$ShowName
     )
@@ -198,8 +289,9 @@ function Build-Mapping {
             $episodeName = $episode.name
             $newName = "$ShowName - S$('{0:D2}' -f $Season)E$('{0:D2}' -f $epNum) - $episodeName.mkv"
 
-            # Clean up invalid filename characters
-            $newName = $newName -replace '[<>:"/\\|?*]', '-'
+            foreach ($char in @('<', '>', ':', '"', '/', '\', '|', '?', '*')) {
+                $newName = $newName.Replace($char, '-')
+            }
 
             $mapping[$fileName] = $newName
         }
@@ -208,31 +300,11 @@ function Build-Mapping {
     return $mapping
 }
 
-function Get-ScopedEpisodes {
-    param(
-        [array]$AllEpisodes,
-        [string]$EpisodeRange
-    )
-
-    if (-not $EpisodeRange) {
-        return $null
-    }
-
-    if ($EpisodeRange -match '^(\d+)-(\d+)$') {
-        $start = [int]$matches[1]
-        $end = [int]$matches[2]
-        return $AllEpisodes | Where-Object { $_.episode_number -ge $start -and $_.episode_number -le $end } | Sort-Object episode_number
-    }
-
-    Write-Host "Invalid episode range format. Use: START-END (e.g., 14-25)" -ForegroundColor Yellow
-    return $null
-}
-
 # Main execution
-Write-Host "`n" -NoNewline
-Write-Host ("=" * 70) -ForegroundColor Cyan
+Write-Host ""
+Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host "TMDB-BASED MAPPING GENERATOR" -ForegroundColor Cyan
-Write-Host ("=" * 70) -ForegroundColor Cyan
+Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host ""
 
 $diskPath = Join-Path $baseDir $Show | Join-Path -ChildPath "Season $Season" | Join-Path -ChildPath "Disk $Disk"
@@ -258,29 +330,15 @@ if ($showYear) {
     Write-Host "Premiere year: $showYear" -ForegroundColor Green
 }
 
-$episodes = Get-TMDbEpisodes -ShowId $showId -Season $Season
+$allEpisodes = Get-TMDbEpisodes -ShowId $showId -Season $Season
 
-if (-not $episodes) {
+if (-not $allEpisodes) {
     Write-Host "Error: Could not fetch episodes for Season $Season" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "Found $($episodes.Count) episodes on TMDb for Season $Season" -ForegroundColor Green
+Write-Host "Found $($allEpisodes.Count) episodes on TMDb for Season $Season" -ForegroundColor Green
 Write-Host ""
-
-# Apply episode scoping if provided
-$episodesToMatch = $episodes
-if ($EpisodeRange) {
-    Write-Host "Applying episode range filter: $EpisodeRange" -ForegroundColor Cyan
-    $scopedEpisodes = Get-ScopedEpisodes -AllEpisodes $episodes -EpisodeRange $EpisodeRange
-    if ($scopedEpisodes) {
-        Write-Host "Scoped to $($scopedEpisodes.Count) episodes (E$($scopedEpisodes[0].episode_number)-E$($scopedEpisodes[-1].episode_number))" -ForegroundColor Green
-        $episodesToMatch = $scopedEpisodes
-    } else {
-        Write-Host "Invalid episode range. Proceeding with all episodes." -ForegroundColor Yellow
-    }
-    Write-Host ""
-}
 
 Write-Host "Analyzing ripped files..." -ForegroundColor Gray
 $files = Get-ChildItem -Path $diskPath -File -Filter "*.mkv"
@@ -292,8 +350,8 @@ if ($files.Count -eq 0) {
 
 Write-Host "Found $($files.Count) files to process" -ForegroundColor Green
 
-$fileInfos = @{}  # filename -> duration in seconds
-$fileInfosMs = @{}  # filename -> duration with millisecond precision
+$fileInfos = @{}
+$fileInfosMs = @{}
 
 foreach ($file in $files) {
     Write-Host "  Reading: $($file.Name)" -ForegroundColor Gray -NoNewline
@@ -314,11 +372,46 @@ foreach ($file in $files) {
 }
 
 Write-Host ""
+
+# TIER 1: Try auto-discovery
+$discDbUrl = Invoke-DiscDbAutoDiscovery -ShowName $Show -Season $Season -Disk $Disk
+$episodesToMatch = $allEpisodes
+$matchSource = "Season-wide"
+
+if ($discDbUrl) {
+    # Got DiscDB URL - use it
+    $titles = Get-DiscDbEpisodeList -Url $discDbUrl
+    if ($titles -and $titles.Count -eq $files.Count) {
+        $matchSource = "DiscDB (auto-discovered)"
+        Write-Host "Using episodes from TheDiscDB ($($titles.Count) episodes)" -ForegroundColor Green
+        Write-Host ""
+    }
+} else {
+    # TIER 1 failed - ask user
+    $userChoice = Get-UserEpisodeRange -FileCount $files.Count -AllEpisodes $allEpisodes
+
+    if ($userChoice.source -eq "DiscDB") {
+        $matchSource = "DiscDB (manual URL)"
+        Write-Host "Using episodes from TheDiscDB" -ForegroundColor Green
+    } elseif ($userChoice.source -eq "Manual") {
+        $start = $userChoice.range[0]
+        $end = $userChoice.range[1]
+        $episodesToMatch = $allEpisodes | Where-Object { $_.episode_number -ge $start -and $_.episode_number -le $end }
+        $matchSource = "Manual range ($start-$end)"
+        Write-Host "Scoped to episodes $start-$end" -ForegroundColor Green
+    } else {
+        $matchSource = "Season-wide (fallback)"
+        Write-Host "Using all $($allEpisodes.Count) episodes for matching" -ForegroundColor Green
+    }
+    Write-Host ""
+}
+
 Write-Host "Matching files to episodes by duration..." -ForegroundColor Gray
+Write-Host "Strategy: $matchSource" -ForegroundColor Cyan
+Write-Host ""
 
 $result = Match-FilesToEpisodes -FileInfos $fileInfos -FileInfosMs $fileInfosMs -Episodes $episodesToMatch
 
-Write-Host ""
 Write-Host "Matches:" -ForegroundColor Cyan
 foreach ($epNum in ($result.matches.Keys | Sort-Object)) {
     $episode = $episodesToMatch | Where-Object { $_.episode_number -eq $epNum }
@@ -328,7 +421,7 @@ foreach ($epNum in ($result.matches.Keys | Sort-Object)) {
 
 if ($result.ambiguous.Count -gt 0) {
     Write-Host ""
-    Write-Host "⚠ AMBIGUOUS MATCHES (manual verification recommended):" -ForegroundColor Yellow
+    Write-Host "WARNING: AMBIGUOUS MATCHES (manual verification recommended):" -ForegroundColor Yellow
     foreach ($item in $result.ambiguous) {
         Write-Host "  $item" -ForegroundColor Yellow
     }
@@ -346,14 +439,12 @@ Write-Host ""
 
 $mapping = Build-Mapping -Matches $result.matches -Episodes $episodesToMatch -Season $Season -ShowName $Show
 
-# Save mapping file
 $mappingsDir = (Join-Path $baseDir $Show) | Join-Path -ChildPath "mappings"
 if (-not (Test-Path $mappingsDir)) {
     New-Item -ItemType Directory -Path $mappingsDir -Force | Out-Null
 }
 
 $mappingFile = Join-Path $mappingsDir "S$('{0:D2}' -f $Season)D$('{0:D2}' -f $Disk).json"
-
 $mapping | ConvertTo-Json | Set-Content -Path $mappingFile -Encoding utf8
 
 Write-Host "Mapping saved to: $mappingFile" -ForegroundColor Green
@@ -374,7 +465,7 @@ if ($AutoRename) {
 }
 
 Write-Host ""
-Write-Host ("=" * 70) -ForegroundColor Cyan
+Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host "Complete. Run Rename-DiskRips.ps1 to apply mapping." -ForegroundColor Cyan
-Write-Host ("=" * 70) -ForegroundColor Cyan
+Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host ""
