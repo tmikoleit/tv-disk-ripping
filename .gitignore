@@ -1,0 +1,23 @@
+# Working directories
+Community/
+*/Season */
+*/Disk */
+
+# Completed files (too large)
+Completed/
+
+# Mapping files with actual data
+mappings/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+*.local.json
+
+# Temporary files
+*.tmp
+*.temp
+*.log
