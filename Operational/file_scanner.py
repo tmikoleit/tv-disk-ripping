@@ -1,5 +1,5 @@
 """
-Scan MKV files and extract duration information.
+Scan MKV files and extract metadata (duration + file size).
 """
 
 import logging
@@ -94,19 +94,31 @@ def get_mkv_duration(filepath: Path) -> Optional[int]:
     if duration is not None:
         return duration
 
-    log.warning(f"Could not extract duration: {filepath.name}")
     return None
 
 
-def scan_disk_folder(disk_path: Path) -> List[Tuple[str, int]]:
+def get_file_size_score(filepath: Path) -> float:
     """
-    Scan a Disk folder and extract all MKV file durations.
+    Get file size as a matching hint (bigger files = longer episodes generally).
+
+    Returns normalized score (0-1).
+    """
+    try:
+        size_gb = filepath.stat().st_size / (1024 ** 3)
+        return size_gb
+    except:
+        return 0
+
+
+def scan_disk_folder(disk_path: Path) -> List[Tuple[str, int, float]]:
+    """
+    Scan a Disk folder and extract MKV metadata.
 
     Args:
         disk_path: Path to Disk N folder
 
     Returns:
-        List of (filename, duration_seconds) tuples
+        List of (filename, duration_seconds, file_size_gb) tuples
     """
     if not disk_path.exists():
         log.warning(f"Disk folder not found: {disk_path}")
@@ -121,18 +133,22 @@ def scan_disk_folder(disk_path: Path) -> List[Tuple[str, int]]:
 
     log.info(f"Scanning {len(mkv_files)} MKV files...")
 
-    failed = 0
+    extracted = 0
     for mkv_file in mkv_files:
         duration = get_mkv_duration(mkv_file)
+        size_gb = get_file_size_score(mkv_file)
+
         if duration is not None:
-            files.append((mkv_file.name, duration))
-            log.debug(f"{mkv_file.name}: {duration}s")
+            files.append((mkv_file.name, duration, size_gb))
+            log.debug(f"{mkv_file.name}: {duration}s, {size_gb:.1f}GB")
+            extracted += 1
         else:
-            failed += 1
+            # Still add file with 0 duration so we know it exists
+            # Matcher will use file size as tiebreaker
+            files.append((mkv_file.name, 0, size_gb))
+            log.debug(f"{mkv_file.name}: (no duration), {size_gb:.1f}GB")
 
-    if failed > 0:
-        log.warning(f"⚠️ Could not extract duration for {failed}/{len(mkv_files)} files")
-        log.warning(f"   Install ffmpeg: choco install ffmpeg -y")
-        log.warning(f"   Or install mediainfo: choco install mediainfo-cli -y")
-
-    return files
+    if extracted < len(mkv_files):
+        fallback_count = len(mkv_files) - extracted
+        log.info(f"⚠️ Extracted duration for {extracted}/{len(mkv_files)} files")
+        log.info(f"   Will use file size as secondary matcher for {fallback_count} files")

@@ -120,20 +120,21 @@ def process_single_disk(
             click.echo(f"❌ No MKV files found in {disk_path}")
             sys.exit(1)
 
-        # Assign TMDb durations to files in order
-        ripped_files = [
-            (mkv.name, episodes[i].runtime_seconds if i < len(episodes) else 2700)
-            for i, mkv in enumerate(mkv_files)
-        ]
-        click.echo(f"⚠️ Using episode runtimes from TMDb as file durations (may be approximate)\n")
+        # Assign TMDb durations to files in order, include file size
+        ripped_files = []
+        for i, mkv in enumerate(mkv_files):
+            duration = episodes[i].runtime_seconds if i < len(episodes) else 2700
+            size_gb = mkv.stat().st_size / (1024 ** 3)
+            ripped_files.append((mkv.name, duration, size_gb))
+        click.echo(f"⚠️ Using episode runtimes from TMDb + file size heuristic\n")
 
     click.echo(f"✓ Found {len(ripped_files)} MKV files\n")
 
     # Step 3: Match files to episodes
     click.echo(f"🔍 Matching files to episodes...")
     file_objs = [
-        matcher.RippedFile(name, duration)
-        for name, duration in ripped_files
+        matcher.RippedFile(name, duration, size_gb)
+        for name, duration, size_gb in ripped_files
     ]
 
     episode_targets = [

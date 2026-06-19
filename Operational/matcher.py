@@ -33,6 +33,7 @@ class RippedFile:
     """Ripped MKV file metadata."""
     filename: str
     duration_seconds: int
+    file_size_gb: float = 0.0
 
 
 @dataclass
@@ -80,6 +81,7 @@ def match_file(
 
     best_match = None
     best_delta = float('inf')
+    best_size_diff = float('inf')
     candidates: List[Tuple[EpisodeTarget, int]] = []
 
     for target in episode_targets:
@@ -96,10 +98,18 @@ def match_file(
         if delta <= MAX_DELTA:
             candidates.append((target, delta))
 
-        # Track best match
+        # Track best match (prefer tight duration match, break ties with file size)
         if delta < best_delta:
             best_delta = delta
             best_match = target
+            best_size_diff = float('inf')
+        elif delta == best_delta and ripped_file.file_size_gb > 0:
+            # If duration delta is identical, use file size as tiebreaker
+            # Larger episodes typically have larger files
+            size_diff = abs(ripped_file.file_size_gb - (target.runtime_seconds / 3600))
+            if size_diff < best_size_diff:
+                best_size_diff = size_diff
+                best_match = target
 
     # Sort candidates by delta for reporting
     candidates.sort(key=lambda x: x[1])

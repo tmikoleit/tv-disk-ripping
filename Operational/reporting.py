@@ -59,11 +59,13 @@ def generate_text_report(
     low_conf = [r for r in results if r.confidence == "low"]
     no_match = [r for r in results if r.confidence == "no_match"]
 
-    # Detect ambiguities: collisions (multiple matches <10s delta)
+    # Detect ambiguities: collisions (multiple matches <5s delta where duration differs)
+    # Only flag if the file duration is genuinely ambiguous (not just TMDb having identical runtimes)
     collisions = [
         r for r in results
         if r.confidence != "no_match" and len(r.all_candidates) > 1
-        and r.all_candidates[0][1] <= 10
+        and r.all_candidates[0][1] <= 5
+        and any(c[1] <= 5 for c in r.all_candidates[1:])
     ]
 
     # Flagged files: collisions + medium/low confidence (as list, avoiding set issues)
