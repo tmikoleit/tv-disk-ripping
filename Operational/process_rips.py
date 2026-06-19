@@ -23,6 +23,7 @@ if sys.platform == "win32":
 import disc_lookup
 import file_scanner
 import matcher
+from matcher import match_files_greedy
 import reporting
 import correction
 from config import BASE_DIR, TMDB_API_KEY
@@ -149,7 +150,7 @@ def process_single_disk(
         for ep in episodes
     ]
 
-    results = matcher.match_files(
+    results, collisions = match_files_greedy(
         file_objs,
         episode_targets,
         disk_episodes=disc_info.episodes
@@ -159,7 +160,7 @@ def process_single_disk(
 
     # Step 4: Generate report
     click.echo(f"📊 Generating report...")
-    report_text = reporting.generate_text_report(results, show, season, disk)
+    report_text = reporting.generate_text_report(results, show, season, disk, collisions=collisions)
     click.echo(report_text)
 
     # Step 5: Save files
@@ -242,7 +243,7 @@ def apply_corrections_to_disk(
         for ep in episodes
     ]
 
-    results = matcher.match_files(
+    results, collisions = match_files_greedy(
         file_objs,
         episode_targets,
         disk_episodes=disc_info.episodes
@@ -258,7 +259,7 @@ def apply_corrections_to_disk(
 
     # Regenerate report with corrected matches
     click.echo(f"📊 Regenerating report...\n")
-    report_text = reporting.generate_text_report(results, show, season, disk)
+    report_text = reporting.generate_text_report(results, show, season, disk, collisions=collisions)
     click.echo(report_text)
 
     # Save updated files

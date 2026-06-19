@@ -1,11 +1,23 @@
 """
 Runtime-based episode matching with disc-level constraints.
 
-Implements riplex-style matching with configurable confidence thresholds.
+Implements greedy matching algorithm prioritizing unique-runtime episodes first,
+then duration-based matching with collision detection.
+
+Inspired by riplex (https://github.com/AnyCredit5518/riplex) with enhancements:
+- Greedy matching for unambiguous episodes (unique runtimes)
+- Collision detection (hard error if episode ← multiple files)
+- Better confidence thresholds (±30s for high confidence)
+
+FUTURE: Original filename matching when MakeMKV logs are captured during ripping.
+MakeMKV shows track_001.m2ts → title_t00.mkv mappings, and thediskdb.com has
+original filenames linked to episode names. This would enable 100% accurate
+matching without relying on duration ambiguities. Implementation blocked on
+capturing MakeMKV GUI logs programmatically.
 """
 
-from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
+from dataclasses import dataclass, field
+from typing import List, Tuple, Optional, Dict, Set
 import logging
 
 from config import (
@@ -44,15 +56,24 @@ class MatchResult:
     delta_seconds: int
     confidence: str  # "high", "medium", "low", "no_match"
     all_candidates: List[Tuple[EpisodeTarget, int]]  # All possible matches within threshold
+    collision: bool = False  # True if multiple files match this episode
+
+
+@dataclass
+class CollisionInfo:
+    """Tracks episodes with multiple file matches."""
+    episode: EpisodeTarget
+    files: List[RippedFile] = field(default_factory=list)
+    count: int = 0
 
 
 def get_confidence(delta: int) -> str:
     """
     Determine confidence level based on delta (seconds).
 
-    HIGH: ≤30s
-    MEDIUM: ≤120s
-    LOW: >120s
+    HIGH: ≤30s (riplex standard, reliable for most cases)
+    MEDIUM: ≤120s (looser tolerance, ambiguity likely)
+    LOW: >120s (poor match, may not belong on this disk)
     """
     if delta <= CONFIDENCE_HIGH:
         return "high"
@@ -60,6 +81,47 @@ def get_confidence(delta: int) -> str:
         return "medium"
     else:
         return "low"
+
+
+def find_unique_runtime_episodes(
+    episode_targets: List[EpisodeTarget],
+) -> Dict[int, EpisodeTarget]:
+    """
+    Identify episodes with unique runtimes (no ambiguity).
+
+    Returns:
+        Dict mapping runtime_seconds → EpisodeTarget for unique runtimes
+    """
+    runtime_counts: Dict[int, List[EpisodeTarget]] = {}
+    for target in episode_targets:
+        if target.runtime_seconds > 0:
+            runtime_counts.setdefault(target.runtime_seconds, []).append(target)
+
+    # Keep only episodes where runtime is unique to that episode
+    unique = {}
+    for runtime, episodes in runtime_counts.items():
+        if len(episodes) == 1:
+            unique[runtime] = episodes[0]
+
+    return unique
+
+
+def detect_collisions(
+    results: List[MatchResult],
+) -> Dict[EpisodeTarget, List[RippedFile]]:
+    """
+    Detect collisions: episodes matched by multiple files.
+
+    Returns:
+        Dict mapping EpisodeTarget → list of files that matched it
+    """
+    episode_file_map: Dict[EpisodeTarget, List[RippedFile]] = {}
+    for result in results:
+        if result.matched_episode is not None:
+            episode_file_map.setdefault(result.matched_episode, []).append(result.file)
+
+    # Return only episodes with multiple matches
+    return {ep: files for ep, files in episode_file_map.items() if len(files) > 1}
 
 
 def match_file(
@@ -132,13 +194,90 @@ def match_file(
     )
 
 
+def match_files_greedy(
+    ripped_files: List[RippedFile],
+    episode_targets: List[EpisodeTarget],
+    disk_episodes: Optional[List[int]] = None,
+) -> Tuple[List[MatchResult], Dict[EpisodeTarget, List[RippedFile]]]:
+    """
+    Match all ripped files to episodes using greedy algorithm.
+
+    Algorithm:
+    1. Identify episodes with UNIQUE runtimes (no ambiguity)
+    2. First pass: match files to unique-runtime episodes
+    3. Second pass: match remaining files using best-match logic
+    4. Detect and return collisions
+
+    Args:
+        ripped_files: List of MKV files to match
+        episode_targets: All available episode targets
+        disk_episodes: Constraint - only match these episode numbers
+
+    Returns:
+        Tuple of (MatchResult list, collision dict)
+        - MatchResult.collision flag set to True for involved files
+        - Dict maps EpisodeTarget → list of files with collision
+    """
+    # Step 1: Find episodes with unique runtimes
+    unique_runtimes = find_unique_runtime_episodes(episode_targets)
+    matched_files: Set[str] = set()
+    results = []
+
+    # Step 2: First pass - match to unique-runtime episodes
+    for ripped_file in ripped_files:
+        if ripped_file.duration_seconds in unique_runtimes:
+            target = unique_runtimes[ripped_file.duration_seconds]
+            delta = abs(ripped_file.duration_seconds - target.runtime_seconds)
+
+            result = MatchResult(
+                file=ripped_file,
+                matched_episode=target,
+                delta_seconds=delta,
+                confidence=get_confidence(delta),
+                all_candidates=[(target, delta)],
+                collision=False
+            )
+            results.append(result)
+            matched_files.add(ripped_file.filename)
+            log.info(f"[GREEDY] {ripped_file.filename} → {target.show} S{target.season:02d}E{target.episode:02d} (unique runtime match)")
+        else:
+            # Placeholder for second pass
+            results.append(None)
+
+    # Step 3: Second pass - match remaining files
+    remaining_files = [f for f in ripped_files if f.filename not in matched_files]
+    for i, ripped_file in enumerate(ripped_files):
+        if results[i] is not None:
+            continue  # Already matched in first pass
+
+        result = match_file(ripped_file, episode_targets, disk_episodes)
+        results[i] = result
+
+    # Step 4: Detect collisions
+    collisions = detect_collisions(results)
+    for collision_episode, files in collisions.items():
+        for result in results:
+            if result.matched_episode == collision_episode:
+                result.collision = True
+
+    if collisions:
+        log.warning(f"[COLLISION] Detected {len(collisions)} episodes with multiple file matches:")
+        for ep, files in collisions.items():
+            log.warning(f"  {ep.show} S{ep.season:02d}E{ep.episode:02d}: {[f.filename for f in files]}")
+
+    return results, collisions
+
+
 def match_files(
     ripped_files: List[RippedFile],
     episode_targets: List[EpisodeTarget],
     disk_episodes: Optional[List[int]] = None,
 ) -> List[MatchResult]:
     """
-    Match all ripped files to episodes.
+    Match all ripped files to episodes (standard algorithm).
+
+    Uses greedy matching with collision detection. For most use cases,
+    prefer match_files_greedy() which provides collision information.
 
     Args:
         ripped_files: List of MKV files to match
@@ -148,9 +287,5 @@ def match_files(
     Returns:
         List of MatchResult objects
     """
-    results = []
-    for ripped_file in ripped_files:
-        result = match_file(ripped_file, episode_targets, disk_episodes)
-        results.append(result)
-
+    results, _ = match_files_greedy(ripped_files, episode_targets, disk_episodes)
     return results

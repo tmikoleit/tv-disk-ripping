@@ -1,5 +1,8 @@
 """
 Generate reports from matching results.
+
+Integrates greedy matching algorithm with collision detection to highlight
+episodes matched by multiple files (hard errors requiring user correction).
 """
 
 from typing import List, Dict
@@ -7,7 +10,7 @@ from pathlib import Path
 import json
 import logging
 
-from matcher import MatchResult, CONFIDENCE_HIGH, CONFIDENCE_MEDIUM
+from matcher import MatchResult, EpisodeTarget, match_files_greedy
 
 log = logging.getLogger(__name__)
 
@@ -85,14 +88,23 @@ def generate_text_report(
     show: str,
     season: int,
     disk: int,
+    collisions: Dict[EpisodeTarget, List] = None,
 ) -> str:
     """
-    Generate a human-readable text report.
+    Generate a human-readable text report with collision detection.
 
     Returns a formatted string report with:
+    - COLLISIONS section (HARD ERROR — episodes matched by multiple files)
     - All matched files with confidence levels
-    - Flagged files (collisions, medium/low confidence, unmatched)
+    - Flagged files (medium/low confidence, unmatched)
     - Summary statistics
+
+    Args:
+        results: List of MatchResult objects from greedy matching
+        show: Show name
+        season: Season number
+        disk: Disk number
+        collisions: Dict of EpisodeTarget → List[RippedFile] from match_files_greedy()
     """
 
     lines = []
@@ -107,13 +119,20 @@ def generate_text_report(
     low_conf = [r for r in results if r.confidence == "low"]
     no_match = [r for r in results if r.confidence == "no_match"]
 
+    # Get collision files for highlighting
+    collision_files = set()
+    if collisions:
+        for ep, files in collisions.items():
+            for f in files:
+                collision_files.add(f.filename)
+
     # Detect clustering: episodes with identical runtimes where files could be permutations
     clustering_issues = detect_clustering_ambiguities(results, threshold_seconds=30)
 
     # Detect ambiguities: collisions (multiple matches <5s delta)
     # ONLY flag when file durations were actually measured (<= 0 means proxy from TMDb)
     # When using proxy durations, don't flag false ambiguities from similar TMDb runtimes
-    collisions = [
+    duration_collisions = [
         r for r in results
         if r.confidence != "no_match"
         and r.delta_seconds > 0  # Only flag if actual file duration was measured
@@ -123,7 +142,27 @@ def generate_text_report(
     ]
 
     # Flagged files: collisions + medium/low confidence (as list, avoiding set issues)
-    flagged_files = collisions + medium_conf + low_conf
+    flagged_files = duration_collisions + medium_conf + low_conf
+
+    # COLLISIONS section (hard error — episode ← multiple files)
+    if collisions:
+        lines.append("❌ COLLISIONS — HARD ERROR")
+        lines.append("-" * 80)
+        lines.append("Multiple files matched to the same episode. This must be corrected:")
+        lines.append("")
+        for ep, files in collisions.items():
+            lines.append(f"  EPISODE MATCHED BY {len(files)} FILES:")
+            lines.append(f"    S{ep.season:02d}E{ep.episode:02d} - {ep.title}")
+            for f in files:
+                # Find the result for this file
+                result = next((r for r in results if r.file.filename == f.filename), None)
+                if result:
+                    delta_str = format_duration(result.delta_seconds)
+                    lines.append(f"      • {f.filename} [Δ {delta_str}]")
+            lines.append("")
+        lines.append("    ACTION REQUIRED: Provide corrections via --correct flag")
+        lines.append("")
+    lines.append("")
 
     # Matched files section
     lines.append("MATCHED FILES")
@@ -137,10 +176,18 @@ def generate_text_report(
                 target_dur = format_duration(result.matched_episode.runtime_seconds)
                 delta_str = format_duration(result.delta_seconds)
 
-                flag = "⚠️ " if result in flagged_files else "✓ "
+                # Highlight collision files, flagged files, and greedy matches
+                if result.file.filename in collision_files:
+                    flag = "❌"  # Collision
+                elif result in flagged_files:
+                    flag = "⚠️ "  # Other flags
+                else:
+                    flag = "✓ "  # OK
+
                 confidence_badge = result.confidence.upper()
+                greedy_mark = " [GREEDY]" if not result.collision and result.delta_seconds == 0 and "E" in str(result.matched_episode) else ""
                 lines.append(
-                    f"  {flag}[{confidence_badge}] {result.file.filename}"
+                    f"  {flag}[{confidence_badge}] {result.file.filename}{greedy_mark}"
                     f"\n            {file_dur} → "
                     f"S{result.matched_episode.season:02d}E{result.matched_episode.episode:02d} "
                     f"({target_dur}) [Δ {delta_str}]"
@@ -242,9 +289,14 @@ def generate_text_report(
     lines.append(f"  ⚠ MEDIUM confidence (30s < Δ ≤120s): {len(medium_conf)}")
     lines.append(f"  ⚠ LOW confidence (Δ >120s): {len(low_conf)}")
     lines.append(f"  ❌ Unmatched: {len(no_match)}")
-    lines.append(f"  🚩 Collisions (multiple matches): {len(collisions)}")
+    lines.append(f"  ❌ COLLISIONS (episode ← multiple files): {len(collisions) if collisions else 0}")
+    lines.append(f"  🚩 Duration ambiguities (multiple matches <5s): {len(duration_collisions)}")
 
-    if no_match or flagged_files:
+    if collisions:
+        lines.append("")
+        lines.append("❌ HARD ERROR: Collisions must be corrected before proceeding")
+        lines.append("   Provide corrections via: --correct 'file.mkv -> S##E##'")
+    elif no_match or flagged_files:
         lines.append("")
         lines.append("⚠️ ACTION REQUIRED: Review flagged/unmatched files")
         lines.append("   Provide corrections via: 'file.mkv -> S##E## (title)'")
