@@ -14,10 +14,10 @@ TMDB_API_KEY = os.getenv('TMDB_API_KEY')
 DVDCOMPARE_CACHE_TTL = 86400  # 24 hours
 
 # Paths
-BASE_DIR = Path(__file__).parent
-RIPS_DIR = BASE_DIR / 'rips'  # Where MakeMKV output goes
+BASE_DIR = Path(__file__).parent.parent  # D:\Disk Ripping\
+RIPS_DIR = BASE_DIR  # Where MakeMKV output goes (root of Disk Ripping)
 COMPLETED_DIR = BASE_DIR / 'Completed'
-REPORTS_DIR = BASE_DIR / 'reports'
+OPERATIONAL_DIR = BASE_DIR / 'Operational'
 
 # Matching thresholds (seconds)
 CONFIDENCE_HIGH = 30      # ≤30s: high confidence

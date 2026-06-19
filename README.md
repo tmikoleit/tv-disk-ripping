@@ -21,12 +21,16 @@ Automatic episode matching and file organization for MakeMKV rips. Uses dvdcompa
 set TMDB_API_KEY=your_api_key_here
 
 # Install dependencies
+cd Operational
 pip install -r requirements.txt
 ```
 
 ### Usage
 
+**From the Operational folder:**
 ```bash
+cd Operational
+
 # Single disk
 python process_rips.py community 1 2
 
@@ -40,6 +44,16 @@ python process_rips.py community --all
 python process_rips.py community 1 2 --preview
 ```
 
+**Or from the root folder (Windows):**
+```bash
+run_process.bat community 1 2
+```
+
+**Or from the root folder (Mac/Linux):**
+```bash
+./run_process.sh community 1 2
+```
+
 ## Workflow
 
 1. **Rip with MakeMKV** → `D:\Disk Ripping\[Show]\Season [N]\Disk [N]\`
@@ -51,8 +65,17 @@ python process_rips.py community 1 2 --preview
 ## Directory Structure
 
 ```
-D:\Disk Ripping\
-├── [Show Name]/
+D:\Disk Ripping/
+├── Operational/                    ← All Python scripts and tooling
+│   ├── process_rips.py             # Main CLI entry point
+│   ├── config.py, matcher.py, etc. # Core modules
+│   ├── requirements.txt            # Python dependencies
+│   └── __init__.py
+├── run_process.bat                 # Windows wrapper
+├── run_process.sh                  # Mac/Linux wrapper
+├── README.md
+│
+├── [Show Name]/                    ← Ripping working directory
 │   ├── Season 1/
 │   │   ├── Disk 1/
 │   │   │   ├── title_t00.mkv
@@ -64,7 +87,10 @@ D:\Disk Ripping\
 │   └── reports/
 │       ├── S01D01_report.txt
 │       └── ...
-└── Completed/  (for organized output)
+│
+└── Completed/                      ← Organized output (optional)
+    └── [Show] (YYYY)/
+        └── Season N/
 ```
 
 ## Report Format
