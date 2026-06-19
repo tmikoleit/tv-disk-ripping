@@ -1,100 +1,114 @@
-# Disk Ripping Automation
+# Disk Ripping Automation Tool
 
-Fully automated Blu-ray/DVD ripping and file organization for Plex using MakeMKV, TMDb metadata, and PowerShell.
-
-## Overview
-
-- **Generate-MappingFromMetadata.ps1** — Fetches episode data from TMDb, matches ripped files by duration, auto-renames to FileBot format
-- **Rename-DiskRips.ps1** — Applies mappings, renames files, and moves to organized Completed folder
+Automatic episode matching and file organization for MakeMKV rips. Uses dvdcompare.net and TMDb to match ripped MKV files to episodes, with disc-aware constraints and ambiguity detection.
 
 ## Features
 
-✅ **Fully Automated** — No manual episode matching  
-✅ **Millisecond Precision** — Disambiguates files with identical duration  
-✅ **Ambiguous Match Alerts** — Flags episodes needing manual verification  
-✅ **Generic** — Works with any show on TMDb  
-✅ **Year-Aware Folders** — `Show Name (YYYY)/Season N/`  
-✅ **Accumulates Disks** — Multiple disks append to same season folder  
-✅ **Plex-Ready** — FileBot naming format  
+- ✅ **Disc-aware matching** — Only considers episodes on the current disk
+- ✅ **Confidence scoring** — HIGH (≤30s), MEDIUM (≤120s), LOW (>120s)
+- ✅ **Ambiguity detection** — Flags potential mismatches for review
+- ✅ **Bulk processing** — Process single disks, entire seasons, or full shows
+- ✅ **Interactive workflow** — Run via Claude Code, review results, request revisions
+- ✅ **Mapping persistence** — Save JSON mappings for Plex naming
 
 ## Quick Start
 
-### Prerequisites
-- TMDb API key: https://www.themoviedb.org/settings/api
-- ffprobe (optional): `choco install ffmpeg -y`
-- PowerShell 5.1+
+### Setup
+
+```bash
+# Install Python 3.9+
+# Set environment variables
+set TMDB_API_KEY=your_api_key_here
+
+# Install dependencies
+pip install -r requirements.txt
+```
 
 ### Usage
 
-```powershell
-# Set API key
-$env:TMDB_API_KEY = "your_api_key"
+```bash
+# Single disk
+python process_rips.py community 1 2
 
-# Generate mapping + rename
-D:\Disk Ripping\Generate-MappingFromMetadata.ps1 -Show "Show Name" -Season 1 -Disk 1 -AutoRename
+# All disks in a season
+python process_rips.py community --season 1
 
-# Move to Completed folder
-D:\Disk Ripping\Rename-DiskRips.ps1 -Show "Show Name" -Season 1 -Disk 1 -MoveToCompleted
+# All disks in all seasons
+python process_rips.py community --all
 
-# Move to Plex
-Move-Item "D:\Disk Ripping\Completed\Show Name (YYYY)\Season 1\*.mkv" "D:\Plex Library\Show Name\Season 1\"
+# Preview mode (no changes)
+python process_rips.py community 1 2 --preview
 ```
+
+## Workflow
+
+1. **Rip with MakeMKV** → `D:\Disk Ripping\[Show]\Season [N]\Disk [N]\`
+2. **Run tool** → `python process_rips.py [show] [season] [disk]`
+3. **Review report** → Check for matches, ambiguities, confidence scores
+4. **Request changes** → Tell Claude what needs fixing
+5. **Rename files** → Use generated mapping JSON with your renaming tool
 
 ## Directory Structure
 
-**Working:**
 ```
 D:\Disk Ripping\
-├── [Show]/
+├── [Show Name]/
+│   ├── Season 1/
+│   │   ├── Disk 1/
+│   │   │   ├── title_t00.mkv
+│   │   │   └── ...
+│   │   └── Disk 2/
 │   ├── mappings/
-│   │   └── S[N]D[N].json (generated)
-│   └── Season [N]/
-│       └── Disk [N]/ (ripped files)
+│   │   ├── S01D01.json
+│   │   └── ...
+│   └── reports/
+│       ├── S01D01_report.txt
+│       └── ...
+└── Completed/  (for organized output)
 ```
 
-**Completed:**
+## Report Format
+
+Each run generates a single combined report showing:
+
+- **Matched Files** — All episodes matched with confidence levels
+- **Ambiguous Matches** — Episodes with multiple possible matches
+- **Unmatched Files** — MKV files that couldn't be matched
+- **Summary** — Total matches, confidence distribution, action items
+
+## Interactive Workflow
+
+This tool is designed to be run via Claude Code with interactive refinement:
+
 ```
-D:\Disk Ripping\Completed\
-└── [Show] (YYYY)/
-    └── Season [N]/ (all disks accumulated)
+You: "Process Community Season 1 Disk 2"
+Claude: Runs tool, shows report
+You: "title_t03.mkv is wrong, should be S01E20"
+Claude: Revises mapping, reruns validation
+You: "Perfect, apply it"
+Claude: Commits to git, ready for next disk
 ```
 
-## Output Format
+## Disk Constraint Guarantee
 
-Files are renamed to FileBot standard:
-```
-Breaking Bad - S01E01 - Pilot.mkv
-Breaking Bad - S01E02 - Cat's in the Bag....mkv
-```
-
-## Troubleshooting
-
-**"API key required"**
-```powershell
-$env:TMDB_API_KEY = "your_key"
-```
-
-**"Could not find '[Show]' on TMDb"**
-- Try alternate name (e.g., "The Office (US)")
-- Verify on https://www.themoviedb.org
-
-**Duration mismatch**
-- Install ffprobe for better precision
-- Tolerance is ±90 seconds for Blu-ray variations
-
-**Ambiguous matches**
-- Script flags episodes with identical durations
-- Check millisecond precision and verify manually if needed
-
-## Performance
-
-- Ripping: 30-90 min/disk (depends on tracks)
-- Processing: 10-30 sec/disk (metadata + matching)
+Every run validates that:
+- Only episodes from the specified disk are considered
+- No cross-disk episode leakage
+- Bulk runs maintain per-disk integrity
 
 ## Version History
 
-See git history for changes. Latest: Enhanced millisecond precision matching with per-season/disk scoping.
+All changes are committed to git for full traceability:
+```bash
+git log --oneline
+```
+
+## Development
+
+See [DEVELOPMENT.md](docs/DEVELOPMENT.md) for architecture, testing, and contribution guidelines.
 
 ---
 
-**Status:** Production-Ready | **Tested:** Community, The Northman
+**Status:** Beta (under active development)  
+**Last Updated:** 2026-06-18  
+**Next Phase:** Core implementation and Community Season 1 testing

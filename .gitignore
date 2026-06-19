@@ -1,23 +1,57 @@
-# Working directories
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+
+# Project-specific (working directories)
 Community/
 */Season */
 */Disk */
-
-# Completed files (too large)
 Completed/
-
-# Mapping files with actual data
 mappings/
+reports/
 
-# System files
+# Ripped content (too large for repo)
+*.mkv
+
+# Cache
+*.cache
+cache/
+
+# OS
 .DS_Store
 Thumbs.db
-
-# Environment variables
-.env
-*.local.json
-
-# Temporary files
-*.tmp
-*.temp
-*.log
