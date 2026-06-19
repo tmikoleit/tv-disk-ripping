@@ -24,6 +24,7 @@ import disc_lookup
 import file_scanner
 import matcher
 import reporting
+import correction
 from config import BASE_DIR, TMDB_API_KEY
 
 # Configure logging
@@ -179,6 +180,101 @@ def process_single_disk(
     click.echo(f"{'=' * 80}\n")
 
 
+def apply_corrections_to_disk(
+    show: str,
+    season: int,
+    disk: int,
+    corrections: List[str],
+) -> None:
+    """
+    Apply user corrections to an existing mapping and regenerate report.
+
+    Args:
+        show: Show name
+        season: Season number
+        disk: Disk number
+        corrections: List of correction strings like "file.mkv -> S##E##"
+    """
+    show_path = BASE_DIR / show
+    disk_path = show_path / f"Season {season}" / f"Disk {disk}"
+
+    if not disk_path.exists():
+        click.echo(f"❌ Directory not found: {disk_path}")
+        sys.exit(1)
+
+    click.echo(f"\n{'=' * 80}")
+    click.echo(f"Applying corrections: {show} S{season:02d}D{disk:02d}")
+    click.echo(f"{'=' * 80}\n")
+
+    # Rebuild results from existing mapping and disc info
+    disc_info, episodes = disc_lookup.get_disc_constrained_episodes(
+        show, season, disk, TMDB_API_KEY
+    )
+
+    if not episodes:
+        click.echo(f"❌ Could not retrieve episode information")
+        sys.exit(1)
+
+    # Scan ripped files
+    ripped_files = file_scanner.scan_disk_folder(disk_path)
+    if not ripped_files:
+        mkv_files = sorted(disk_path.glob("*.mkv"))
+        ripped_files = []
+        for i, mkv in enumerate(mkv_files):
+            duration = episodes[i].runtime_seconds if i < len(episodes) else 2700
+            size_gb = mkv.stat().st_size / (1024 ** 3)
+            ripped_files.append((mkv.name, duration, size_gb))
+
+    # Match files to episodes
+    file_objs = [
+        matcher.RippedFile(name, duration, size_gb)
+        for name, duration, size_gb in ripped_files
+    ]
+
+    episode_targets = [
+        matcher.EpisodeTarget(
+            show=show,
+            season=ep.season,
+            episode=ep.episode,
+            title=ep.title,
+            runtime_seconds=ep.runtime_seconds,
+        )
+        for ep in episodes
+    ]
+
+    results = matcher.match_files(
+        file_objs,
+        episode_targets,
+        disk_episodes=disc_info.episodes
+    )
+
+    # Apply corrections
+    click.echo(f"🔧 Applying {len(corrections)} correction(s)...\n")
+    messages = correction.apply_corrections_interactive(results, corrections)
+    for correction_str, msg in messages.items():
+        click.echo(f"  {msg}")
+
+    click.echo("")
+
+    # Regenerate report with corrected matches
+    click.echo(f"📊 Regenerating report...\n")
+    report_text = reporting.generate_text_report(results, show, season, disk)
+    click.echo(report_text)
+
+    # Save updated files
+    click.echo(f"\n💾 Saving corrected files...")
+    report_path = reporting.save_report(report_text, show, season, disk, BASE_DIR / show)
+    click.echo(f"   Report: {report_path.relative_to(BASE_DIR)}")
+
+    mapping = reporting.generate_mapping_json(results, show)
+    mapping_path = reporting.save_mapping_json(mapping, show, season, disk, BASE_DIR / show)
+    click.echo(f"   Mapping: {mapping_path.relative_to(BASE_DIR)}")
+
+    click.echo(f"\n{'=' * 80}")
+    click.echo(f"✓ Corrections applied")
+    click.echo(f"{'=' * 80}\n")
+
+
 @click.command()
 @click.argument('show', type=str)
 @click.argument('season', type=int, required=False, default=None)
@@ -186,7 +282,8 @@ def process_single_disk(
 @click.option('--season', 'season_opt', type=int, help='Process all disks in this season')
 @click.option('--all', 'process_all', is_flag=True, help='Process all disks in show')
 @click.option('--preview', is_flag=True, help='Preview changes without writing')
-def main(show, season, disk, season_opt, process_all, preview):
+@click.option('--correct', 'correct_list', multiple=True, help='Apply corrections: --correct "file.mkv -> S##E##"')
+def main(show, season, disk, season_opt, process_all, preview, correct_list):
     """
     Process disk rips and generate episode mappings.
 
@@ -194,6 +291,14 @@ def main(show, season, disk, season_opt, process_all, preview):
     SEASON: Season number (required unless using --season or --all)
     DISK: Disk number (required unless using --season or --all)
     """
+
+    # Handle correction mode
+    if correct_list:
+        if not (season is not None and disk is not None):
+            click.echo("❌ Error: --correct requires specific SEASON and DISK")
+            sys.exit(1)
+        apply_corrections_to_disk(show, season, disk, list(correct_list))
+        return
 
     # Validate arguments
     if season_opt and season:
