@@ -1,0 +1,14 @@
+Defaulting to user installation because normal site-packages is not writeable
+Requirement already satisfied: dvdcompare-scraper in c:\users\trist\appdata\roaming\python\python314\site-packages (0.1.15)
+Requirement already satisfied: httpx>=0.27 in c:\users\trist\appdata\roaming\python\python314\site-packages (from dvdcompare-scraper) (0.28.1)
+Requirement already satisfied: beautifulsoup4>=4.12 in c:\users\trist\appdata\roaming\python\python314\site-packages (from dvdcompare-scraper) (4.15.0)
+Requirement already satisfied: soupsieve>=1.6.1 in c:\users\trist\appdata\roaming\python\python314\site-packages (from beautifulsoup4>=4.12->dvdcompare-scraper) (2.8.4)
+Requirement already satisfied: typing-extensions>=4.0.0 in c:\users\trist\appdata\roaming\python\python314\site-packages (from beautifulsoup4>=4.12->dvdcompare-scraper) (4.15.0)
+Requirement already satisfied: anyio in c:\users\trist\appdata\roaming\python\python314\site-packages (from httpx>=0.27->dvdcompare-scraper) (4.14.0)
+Requirement already satisfied: certifi in c:\users\trist\appdata\roaming\python\python314\site-packages (from httpx>=0.27->dvdcompare-scraper) (2026.6.17)
+Requirement already satisfied: httpcore==1.* in c:\users\trist\appdata\roaming\python\python314\site-packages (from httpx>=0.27->dvdcompare-scraper) (1.0.9)
+Requirement already satisfied: idna in c:\users\trist\appdata\roaming\python\python314\site-packages (from httpx>=0.27->dvdcompare-scraper) (3.18)
+Requirement already satisfied: h11>=0.16 in c:\users\trist\appdata\roaming\python\python314\site-packages (from httpcore==1.*->httpx>=0.27->dvdcompare-scraper) (0.16.0)
+
+[notice] A new release of pip is available: 25.3 -> 26.1.2
+[notice] To update, run: python.exe -m pip install --upgrade pip

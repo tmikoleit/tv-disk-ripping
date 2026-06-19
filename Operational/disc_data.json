@@ -1,8 +1,63 @@
 {
   "Community": {
     "1": {
-      "1": [1, 2, 3, 4, 5, 6, 7, 8, 9],
-      "2": [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+      "1": {
+        "episodes": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "metadata": {}
+      },
+      "2": {
+        "episodes": [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25],
+        "metadata": {
+          "14": {
+            "title": "Interpretive Dance",
+            "runtime_seconds": 1240
+          },
+          "15": {
+            "title": "Romantic Expressionism",
+            "runtime_seconds": 1277
+          },
+          "16": {
+            "title": "Communication Studies",
+            "runtime_seconds": 1270
+          },
+          "17": {
+            "title": "Physical Education",
+            "runtime_seconds": 1277
+          },
+          "18": {
+            "title": "Basic Genealogy",
+            "runtime_seconds": 1255
+          },
+          "19": {
+            "title": "Beginner Pottery",
+            "runtime_seconds": 1277
+          },
+          "20": {
+            "title": "The Science of Illusion",
+            "runtime_seconds": 1251
+          },
+          "21": {
+            "title": "Contemporary American Poultry",
+            "runtime_seconds": 1275
+          },
+          "22": {
+            "title": "The Art of Discourse",
+            "runtime_seconds": 1260
+          },
+          "23": {
+            "title": "Modern Warfare",
+            "runtime_seconds": 1274
+          },
+          "24": {
+            "title": "English as a Second Language",
+            "runtime_seconds": 1276
+          },
+          "25": {
+            "title": "Pascal's Triangle Revisited",
+            "runtime_seconds": 1276
+          }
+        }
+      }
     }
   }
 }

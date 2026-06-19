@@ -94,11 +94,25 @@ def _save_to_cache(cache_key: str, info: DiscInfo) -> None:
 
 
 def _load_disc_database() -> dict:
-    """Load disc episode mapping from local file."""
+    """Load disc episode mapping and metadata from local file."""
     db_file = Path(__file__).parent / "disc_data.json"
     if db_file.exists():
         try:
-            return json.loads(db_file.read_text())
+            data = json.loads(db_file.read_text())
+            # Convert new metadata format to old for backward compatibility
+            for show_key, seasons in data.items():
+                for season_key, disks in seasons.items():
+                    for disk_key, disk_data in disks.items():
+                        if isinstance(disk_data, dict) and "episodes" in disk_data:
+                            # New format: {episodes: [...], metadata: {...}}
+                            pass  # Leave as-is for processing below
+                        elif isinstance(disk_data, list):
+                            # Old format: just episode list
+                            data[show_key][season_key][disk_key] = {
+                                "episodes": disk_data,
+                                "metadata": {}
+                            }
+            return data
         except Exception as e:
             log.debug(f"Error reading disc_data.json: {e}")
     return {}
@@ -138,7 +152,7 @@ def get_disc_episodes_from_dvdcompare(
 
     # Try dvdcompare-scraper
     try:
-        from dvdcompare_scraper import search
+        from dvdcompare.scraper import search
         results = search(show, season=season)
         if results:
             release = results[0]
@@ -165,9 +179,12 @@ def get_disc_episodes_from_dvdcompare(
     # Try local disc_data.json
     db = _load_disc_database()
     show_key = show.lower().replace(' ', '-')
+
+    # Try lowercase hyphenated key first
     if show_key in db and str(season) in db[show_key]:
         if str(disk) in db[show_key][str(season)]:
-            episodes = db[show_key][str(season)][str(disk)]
+            disk_data = db[show_key][str(season)][str(disk)]
+            episodes = disk_data.get("episodes") if isinstance(disk_data, dict) else disk_data
             info = DiscInfo(
                 show=show,
                 season=season,
@@ -182,7 +199,8 @@ def get_disc_episodes_from_dvdcompare(
     # Fallback: check if key exists with original case
     if show in db and str(season) in db[show]:
         if str(disk) in db[show][str(season)]:
-            episodes = db[show][str(season)][str(disk)]
+            disk_data = db[show][str(season)][str(disk)]
+            episodes = disk_data.get("episodes") if isinstance(disk_data, dict) else disk_data
             info = DiscInfo(
                 show=show,
                 season=season,
@@ -199,13 +217,161 @@ def get_disc_episodes_from_dvdcompare(
     return None
 
 
+def get_local_db_episodes(
+    show: str,
+    season: int,
+) -> Optional[List[EpisodeMeta]]:
+    """
+    Get episode metadata from local disc_data.json database.
+
+    This is the primary source - has accurate disk-specific data including real durations.
+
+    Args:
+        show: Show name
+        season: Season number
+
+    Returns:
+        List of EpisodeMeta objects, or None if not found in database
+    """
+    log.info(f"Looking up {show} Season {season} in local database...")
+
+    db = _load_disc_database()
+    show_key = show.lower().replace(' ', '-')
+
+    # Try lowercase hyphenated key first
+    if show_key in db and str(season) in db[show_key]:
+        disk_data = db[show_key][str(season)]
+    # Try original case
+    elif show in db and str(season) in db[show]:
+        disk_data = db[show][str(season)]
+    else:
+        log.debug(f"Show '{show}' Season {season} not found in local database")
+        return None
+
+    episodes = []
+    metadata = {}
+
+    # Aggregate metadata from all disks
+    for disk_key, disk in disk_data.items():
+        if isinstance(disk, dict):
+            if "metadata" in disk:
+                metadata.update(disk.get("metadata", {}))
+
+    # Get all episode numbers across all disks
+    all_episode_nums = set()
+    for disk_key, disk in disk_data.items():
+        ep_list = disk.get("episodes") if isinstance(disk, dict) else disk
+        all_episode_nums.update(ep_list)
+
+    # Create EpisodeMeta objects
+    for ep_num in sorted(all_episode_nums):
+        ep_meta = metadata.get(str(ep_num), {})
+        episodes.append(EpisodeMeta(
+            season=season,
+            episode=ep_num,
+            title=ep_meta.get("title", f"Episode {ep_num}"),
+            runtime_seconds=ep_meta.get("runtime_seconds", 0),
+            air_date=ep_meta.get("air_date"),
+        ))
+
+    if episodes:
+        log.info(f"Retrieved {len(episodes)} episodes from local database")
+        return episodes
+
+    return None
+
+
+def get_dvdcompare_episodes(
+    show: str,
+    season: int,
+) -> Optional[List[EpisodeMeta]]:
+    """
+    Fetch episode metadata from dvdcompare-scraper (primary source for accurate disk data).
+
+    dvdcompare has actual episode runtimes from physical discs, unlike TMDb which may be inaccurate.
+
+    Args:
+        show: Show name
+        season: Season number
+
+    Returns:
+        List of EpisodeMeta objects, or None if lookup failed
+    """
+    log.info(f"Fetching {show} Season {season} from dvdcompare...")
+
+    try:
+        from dvdcompare.scraper import search
+        results = search(show, season=season)
+
+        if not results:
+            log.warning(f"Show '{show}' not found on dvdcompare")
+            return None
+
+        release = results[0]
+        episodes = []
+
+        # Extract episodes from all discs
+        for disc_num, disc_data in release.discs.items():
+            if disc_data.items:
+                for item in disc_data.items:
+                    if hasattr(item, 'episode') and item.episode is not None:
+                        # Convert duration from seconds to int if available
+                        runtime_seconds = 0
+                        if hasattr(item, 'duration') and item.duration:
+                            # duration might be in seconds or MM:SS format
+                            if isinstance(item.duration, int):
+                                runtime_seconds = item.duration
+                            elif isinstance(item.duration, str):
+                                # Parse "MM:SS" or "HH:MM:SS" format
+                                parts = item.duration.split(':')
+                                if len(parts) == 2:
+                                    runtime_seconds = int(parts[0]) * 60 + int(parts[1])
+                                elif len(parts) == 3:
+                                    runtime_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+
+                        episode = EpisodeMeta(
+                            season=season,
+                            episode=item.episode,
+                            title=getattr(item, 'title', 'Unknown'),
+                            runtime_seconds=runtime_seconds,
+                            air_date=None,
+                        )
+                        episodes.append(episode)
+
+        if episodes:
+            # Deduplicate by episode number (in case episode appears on multiple discs)
+            seen = {}
+            for ep in episodes:
+                if ep.episode not in seen:
+                    seen[ep.episode] = ep
+            episodes = list(seen.values())
+
+            log.info(f"Retrieved {len(episodes)} episodes from dvdcompare")
+            return sorted(episodes, key=lambda e: e.episode)
+
+        log.warning(f"No episodes found for {show} Season {season} in dvdcompare")
+        return None
+
+    except ImportError:
+        log.debug("dvdcompare-scraper not installed, will try TMDb")
+        return None
+    except Exception as e:
+        log.warning(f"Error fetching from dvdcompare: {e}")
+        import traceback
+        log.debug(traceback.format_exc())
+        return None
+
+
 def get_tmdb_episodes(
     show: str,
     season: int,
     api_key: Optional[str] = None,
 ) -> Optional[List[EpisodeMeta]]:
     """
-    Fetch episode metadata from TMDb API.
+    Fetch episode metadata from TMDb API (fallback source).
+
+    Only used if dvdcompare is unavailable. Note: TMDb runtimes may be inaccurate
+    for some shows. Prefer dvdcompare data when available.
 
     Args:
         show: Show name (will search for exact match)
@@ -220,7 +386,7 @@ def get_tmdb_episodes(
         log.error("TMDB_API_KEY not set. Set environment variable or pass as parameter.")
         return None
 
-    log.info(f"Fetching {show} Season {season} from TMDb...")
+    log.info(f"Fetching {show} Season {season} from TMDb (fallback)...")
 
     try:
         # Search for show
@@ -280,11 +446,15 @@ def get_disc_constrained_episodes(
 
     This is the main entry point for the matching workflow.
 
+    Tries episode metadata sources in order:
+    1. dvdcompare-scraper (has accurate disk durations)
+    2. TMDb API (fallback, but may have inaccurate runtimes)
+
     Args:
         show: Show name
         season: Season number
         disk: Disk number
-        api_key: TMDb API key (optional)
+        api_key: TMDb API key (optional, only used as fallback)
 
     Returns:
         Tuple of (DiscInfo, EpisodeList) or (None, None) if lookup failed
@@ -295,10 +465,21 @@ def get_disc_constrained_episodes(
         log.error(f"Could not determine episodes on {show} S{season:02d}D{disk:02d}")
         return None, None
 
-    # Get all episodes from TMDb
-    all_episodes = get_tmdb_episodes(show, season, api_key)
+    # Try local database first (primary source - has accurate disk durations)
+    all_episodes = get_local_db_episodes(show, season)
+
+    # Fall back to dvdcompare if local DB unavailable
     if not all_episodes:
-        log.error(f"Could not fetch episodes from TMDb for {show} Season {season}")
+        log.info("Local database unavailable, trying dvdcompare")
+        all_episodes = get_dvdcompare_episodes(show, season)
+
+    # Fall back to TMDb if neither available
+    if not all_episodes:
+        log.info("dvdcompare unavailable, falling back to TMDb")
+        all_episodes = get_tmdb_episodes(show, season, api_key)
+
+    if not all_episodes:
+        log.error(f"Could not fetch episodes from dvdcompare or TMDb for {show} Season {season}")
         return None, None
 
     # Filter to only episodes on this disc
