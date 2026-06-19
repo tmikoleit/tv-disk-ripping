@@ -32,6 +32,54 @@ def format_duration(seconds: int) -> str:
     return " ".join(parts)
 
 
+def detect_clustering_ambiguities(results: List[MatchResult], threshold_seconds: int = 30) -> Dict[str, List[tuple]]:
+    """
+    Detect when multiple episodes have identical runtimes and multiple files could be permutations of them.
+
+    Returns dict mapping cluster_key -> list of (result, candidate_episodes)
+    """
+    from collections import defaultdict
+
+    # Get all unique episodes and their runtimes from all_candidates
+    all_episodes_seen = {}
+    for result in results:
+        for candidate, _ in result.all_candidates:
+            if candidate.episode not in all_episodes_seen:
+                all_episodes_seen[candidate.episode] = candidate
+
+    # Group episodes by runtime
+    episode_runtimes = defaultdict(list)
+    for episode_num, ep in all_episodes_seen.items():
+        runtime_key = ep.runtime_seconds
+        episode_runtimes[runtime_key].append(ep)
+
+    # Find runtimes with multiple different episodes
+    clusters = {}
+    for runtime, episodes in episode_runtimes.items():
+        unique_episodes = list({ep.episode: ep for ep in episodes}.values())
+        if len(unique_episodes) > 1:
+            cluster_key = f"E{'-'.join(str(e.episode).zfill(2) for e in sorted(unique_episodes, key=lambda x: x.episode))}"
+            clusters[cluster_key] = unique_episodes
+
+    # Find files that could match multiple episodes in same cluster
+    clustering_issues = {}
+    for cluster_key, cluster_episodes in clusters.items():
+        files_in_cluster = []
+        for result in results:
+            # Check if this file could match ANY episode in the cluster within threshold
+            candidates_in_cluster = [
+                ep for ep in cluster_episodes
+                if abs(result.file.duration_seconds - ep.runtime_seconds) <= threshold_seconds
+            ]
+            if len(candidates_in_cluster) > 1:
+                files_in_cluster.append((result, candidates_in_cluster))
+
+        if len(files_in_cluster) > 1:
+            clustering_issues[cluster_key] = files_in_cluster
+
+    return clustering_issues
+
+
 def generate_text_report(
     results: List[MatchResult],
     show: str,
@@ -58,6 +106,9 @@ def generate_text_report(
     medium_conf = [r for r in results if r.confidence == "medium"]
     low_conf = [r for r in results if r.confidence == "low"]
     no_match = [r for r in results if r.confidence == "no_match"]
+
+    # Detect clustering: episodes with identical runtimes where files could be permutations
+    clustering_issues = detect_clustering_ambiguities(results, threshold_seconds=30)
 
     # Detect ambiguities: collisions (multiple matches <5s delta)
     # ONLY flag when file durations were actually measured (<= 0 means proxy from TMDb)
@@ -96,6 +147,30 @@ def generate_text_report(
                 )
 
     lines.append("")
+
+    # Clustering section - episodes with identical runtimes where files could be permutations
+    if clustering_issues:
+        lines.append("🔀 POTENTIAL PERMUTATION CLUSTERS")
+        lines.append("-" * 80)
+        lines.append("  Episodes with identical runtimes where files could be swapped:")
+        lines.append("")
+        for cluster_key, files_in_cluster in clustering_issues.items():
+            episode_nums = [r.matched_episode.episode for r, _ in files_in_cluster]
+            episode_nums = sorted(set(episode_nums))
+            lines.append(f"  CLUSTER {cluster_key}:")
+            lines.append(f"    These {len(files_in_cluster)} files could be any permutation of episodes: {', '.join(f'E{e:02d}' for e in episode_nums)}")
+            lines.append("")
+            for result, candidates in files_in_cluster:
+                lines.append(f"    • {result.file.filename} ({format_duration(result.file.duration_seconds)})")
+                for i, ep in enumerate(sorted(candidates, key=lambda x: x.episode), 1):
+                    delta = abs(result.file.duration_seconds - ep.runtime_seconds)
+                    mark = "← SELECTED" if result.matched_episode == ep else ""
+                    lines.append(
+                        f"      {i}. S{ep.season:02d}E{ep.episode:02d} ({ep.title:30s}) [Δ {format_duration(delta)}] {mark}"
+                    )
+            lines.append("")
+        lines.append("    ACTION: Verify these files together and reorder them if needed")
+        lines.append("")
 
     # Flagged matches section
     if flagged_files:
