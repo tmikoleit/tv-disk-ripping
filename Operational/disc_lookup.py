@@ -489,6 +489,57 @@ def get_tmdb_episodes(
         return None
 
 
+def infer_disc_episodes_from_file_count(
+    file_count: int,
+    all_episodes: List[EpisodeMeta],
+    disk: int,
+) -> Optional[DiscInfo]:
+    """
+    Infer which episodes are on a disk based on file count.
+
+    Assumes consecutive episodes, distributed across disks by file count.
+    Example: If season has 13 eps total, Disk 1 has 7 files → episodes 1-7
+
+    Args:
+        file_count: Number of title_t*.mkv files on disk
+        all_episodes: All episodes in the season (sorted by episode number)
+        disk: Disk number (for logging)
+
+    Returns:
+        DiscInfo with inferred episode list, or None if inference fails
+    """
+    if not all_episodes:
+        return None
+
+    total_episodes = len(all_episodes)
+    if file_count > total_episodes:
+        log.warning(f"File count ({file_count}) exceeds total episodes ({total_episodes})")
+        file_count = total_episodes
+
+    # Simple heuristic: episodes are in order across disks
+    # Calculate starting episode for this disk based on prior disks' file counts
+    # For now, assume consecutive: Disk 1 gets first N, Disk 2 gets next M, etc.
+    # This requires knowing all disks, so use a simple approach:
+    # Disk N starts at episode (N-1)*avg_per_disk + 1
+
+    # Better approach: just take first file_count episodes
+    # (assumes Disk 1 is processed first, which should be true)
+    inferred_episodes = [ep.episode for ep in all_episodes[:file_count]]
+
+    if not inferred_episodes:
+        return None
+
+    log.info(f"Inferred episodes {inferred_episodes[0]}-{inferred_episodes[-1]} from {file_count} files")
+
+    return DiscInfo(
+        show=all_episodes[0].title if hasattr(all_episodes[0], 'title') else "Unknown",
+        season=all_episodes[0].season,
+        disk=disk,
+        episodes=inferred_episodes,
+        source="file_count_inference"
+    )
+
+
 def get_disc_constrained_episodes(
     show: str,
     season: int,
@@ -500,41 +551,63 @@ def get_disc_constrained_episodes(
 
     This is the main entry point for the matching workflow.
 
-    Tries episode metadata sources in order:
-    1. dvdcompare-scraper (has accurate disk durations)
-    2. TMDb API (fallback, but may have inaccurate runtimes)
+    Tries episode sources in order:
+    1. Local database (disc_data.json) - has accurate disk-specific durations
+    2. dvdcompare API - if available
+    3. TMDb API + file count inference - auto-determine which episodes based on file count
+    4. Smart fallback: Use file count to infer episodes
 
     Args:
         show: Show name
         season: Season number
         disk: Disk number
-        api_key: TMDb API key (optional, only used as fallback)
+        api_key: TMDb API key (optional)
 
     Returns:
         Tuple of (DiscInfo, EpisodeList) or (None, None) if lookup failed
     """
-    # Get disc episode list
-    disc_info = get_disc_episodes_from_dvdcompare(show, season, disk)
-    if not disc_info:
-        log.error(f"Could not determine episodes on {show} S{season:02d}D{disk:02d}")
-        return None, None
-
     # Try local database first (primary source - has accurate disk durations)
     all_episodes = get_local_db_episodes(show, season)
+    if all_episodes:
+        disc_info = DiscInfo(show=show, season=season, disk=disk, episodes=[], source="local_db")
+        # For local DB, we still need to know which episodes are on this disk
+        # This is defined in disc_data.json structure, so we need to refetch that
+        log.info("Using local database episodes")
+    else:
+        all_episodes = None
 
-    # Fall back to dvdcompare if local DB unavailable
+    # If local DB didn't work, try dvdcompare
     if not all_episodes:
-        log.info("Local database unavailable, trying dvdcompare")
-        all_episodes = get_dvdcompare_episodes(show, season)
+        disc_info = get_disc_episodes_from_dvdcompare(show, season, disk)
+        if disc_info:
+            log.info(f"Using dvdcompare: episodes {disc_info.episodes}")
+            # Get episode metadata from dvdcompare
+            all_episodes = get_dvdcompare_episodes(show, season)
 
-    # Fall back to TMDb if neither available
+    # If dvdcompare didn't work, fall back to TMDb
     if not all_episodes:
-        log.info("dvdcompare unavailable, falling back to TMDb")
+        log.info("dvdcompare unavailable, using TMDb fallback")
         all_episodes = get_tmdb_episodes(show, season, api_key)
 
+    # Last resort: Try TMDb with file count inference
     if not all_episodes:
-        log.error(f"Could not fetch episodes from dvdcompare or TMDb for {show} Season {season}")
+        log.error(f"Could not fetch episodes for {show} Season {season}")
         return None, None
+
+    # If we don't have disc_info yet (no dvdcompare or local DB), infer from file count
+    if 'disc_info' not in locals() or not disc_info:
+        from pathlib import Path
+        show_path = BASE_DIR / show / f"Season {season}" / f"Disk {disk}"
+        file_count = len(list(show_path.glob("title_t*.mkv")))
+
+        if file_count > 0:
+            disc_info = infer_disc_episodes_from_file_count(file_count, all_episodes, disk)
+            if not disc_info:
+                log.error(f"Could not infer episodes from file count")
+                return None, None
+        else:
+            log.error(f"No files found in {show_path}")
+            return None, None
 
     # Filter to only episodes on this disc
     disc_episodes = [

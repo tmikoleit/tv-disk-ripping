@@ -108,20 +108,28 @@ def find_unique_runtime_episodes(
 
 def detect_collisions(
     results: List[MatchResult],
-) -> Dict[EpisodeTarget, List[RippedFile]]:
+) -> Dict[str, List[RippedFile]]:
     """
     Detect collisions: episodes matched by multiple files.
 
     Returns:
-        Dict mapping EpisodeTarget → list of files that matched it
+        Dict mapping episode key (S##E##) → list of files that matched it
     """
-    episode_file_map: Dict[EpisodeTarget, List[RippedFile]] = {}
+    episode_file_map: Dict[str, tuple] = {}  # ep_key → (EpisodeTarget, [RippedFiles])
     for result in results:
         if result.matched_episode is not None:
-            episode_file_map.setdefault(result.matched_episode, []).append(result.file)
+            ep = result.matched_episode
+            ep_key = f"S{ep.season:02d}E{ep.episode:02d}"
+            if ep_key not in episode_file_map:
+                episode_file_map[ep_key] = (ep, [])
+            episode_file_map[ep_key][1].append(result.file)
 
-    # Return only episodes with multiple matches
-    return {ep: files for ep, files in episode_file_map.items() if len(files) > 1}
+    # Return only episodes with multiple matches, as dict {ep_key: (EpisodeTarget, [files])}
+    return {
+        ep_key: (ep_target, files)
+        for ep_key, (ep_target, files) in episode_file_map.items()
+        if len(files) > 1
+    }
 
 
 def match_file(
@@ -262,8 +270,8 @@ def match_files_greedy(
 
     if collisions:
         log.warning(f"[COLLISION] Detected {len(collisions)} episodes with multiple file matches:")
-        for ep, files in collisions.items():
-            log.warning(f"  {ep.show} S{ep.season:02d}E{ep.episode:02d}: {[f.filename for f in files]}")
+        for ep_key, (ep_target, files) in collisions.items():
+            log.warning(f"  {ep_key}: {[f.filename for f in files]}")
 
     return results, collisions
 

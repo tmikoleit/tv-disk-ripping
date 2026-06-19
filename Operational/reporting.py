@@ -122,7 +122,7 @@ def generate_text_report(
     # Get collision files for highlighting
     collision_files = set()
     if collisions:
-        for ep, files in collisions.items():
+        for ep_key, (ep_target, files) in collisions.items():
             for f in files:
                 collision_files.add(f.filename)
 
@@ -150,9 +150,9 @@ def generate_text_report(
         lines.append("-" * 80)
         lines.append("Multiple files matched to the same episode. This must be corrected:")
         lines.append("")
-        for ep, files in collisions.items():
+        for ep_key, (ep_target, files) in collisions.items():
             lines.append(f"  EPISODE MATCHED BY {len(files)} FILES:")
-            lines.append(f"    S{ep.season:02d}E{ep.episode:02d} - {ep.title}")
+            lines.append(f"    S{ep_target.season:02d}E{ep_target.episode:02d} - {ep_target.title}")
             for f in files:
                 # Find the result for this file
                 result = next((r for r in results if r.file.filename == f.filename), None)
