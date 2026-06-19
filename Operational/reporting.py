@@ -59,11 +59,14 @@ def generate_text_report(
     low_conf = [r for r in results if r.confidence == "low"]
     no_match = [r for r in results if r.confidence == "no_match"]
 
-    # Detect ambiguities: collisions (multiple matches <5s delta where duration differs)
-    # Only flag if the file duration is genuinely ambiguous (not just TMDb having identical runtimes)
+    # Detect ambiguities: collisions (multiple matches <5s delta)
+    # ONLY flag when file durations were actually measured (<= 0 means proxy from TMDb)
+    # When using proxy durations, don't flag false ambiguities from similar TMDb runtimes
     collisions = [
         r for r in results
-        if r.confidence != "no_match" and len(r.all_candidates) > 1
+        if r.confidence != "no_match"
+        and r.delta_seconds > 0  # Only flag if actual file duration was measured
+        and len(r.all_candidates) > 1
         and r.all_candidates[0][1] <= 5
         and any(c[1] <= 5 for c in r.all_candidates[1:])
     ]
