@@ -43,8 +43,7 @@ def generate_text_report(
 
     Returns a formatted string report with:
     - All matched files with confidence levels
-    - Ambiguous matches (if any)
-    - Unmatched files (if any)
+    - Flagged files (collisions, medium/low confidence, unmatched)
     - Summary statistics
     """
 
@@ -59,7 +58,16 @@ def generate_text_report(
     medium_conf = [r for r in results if r.confidence == "medium"]
     low_conf = [r for r in results if r.confidence == "low"]
     no_match = [r for r in results if r.confidence == "no_match"]
-    ambiguous = [r for r in results if len(r.all_candidates) > 1 and r.all_candidates[0][1] <= 10]
+
+    # Detect ambiguities: collisions (multiple matches <10s delta)
+    collisions = [
+        r for r in results
+        if r.confidence != "no_match" and len(r.all_candidates) > 1
+        and r.all_candidates[0][1] <= 10
+    ]
+
+    # Flagged files: collisions + medium/low confidence
+    flagged = set(collisions) | set(medium_conf) | set(low_conf)
 
     # Matched files section
     lines.append("MATCHED FILES")
@@ -73,35 +81,66 @@ def generate_text_report(
                 target_dur = format_duration(result.matched_episode.runtime_seconds)
                 delta_str = format_duration(result.delta_seconds)
 
+                flag = "⚠️ " if result in flagged else "✓ "
                 confidence_badge = result.confidence.upper()
                 lines.append(
-                    f"  [{confidence_badge}] {result.file.filename}"
-                    f"\n            Duration: {file_dur} → "
+                    f"  {flag}[{confidence_badge}] {result.file.filename}"
+                    f"\n            {file_dur} → "
                     f"S{result.matched_episode.season:02d}E{result.matched_episode.episode:02d} "
-                    f"({target_dur}) [delta: {delta_str}]"
+                    f"({target_dur}) [Δ {delta_str}]"
                 )
 
     lines.append("")
 
-    # Ambiguous matches section
-    if ambiguous:
-        lines.append("⚠️  AMBIGUOUS MATCHES")
+    # Flagged matches section
+    if flagged:
+        lines.append("🚩 FLAGGED FOR REVIEW")
         lines.append("-" * 80)
-        for result in ambiguous:
-            lines.append(f"  File: {result.file.filename} ({format_duration(result.file.duration_seconds)})")
 
-            # Show all candidates within 10 seconds
-            for candidate, delta in result.all_candidates[:3]:
-                delta_str = format_duration(delta)
-                lines.append(
-                    f"    → Could be S{candidate.season:02d}E{candidate.episode:02d} "
-                    f"({candidate.title}) [delta: {delta_str}]"
-                )
-
-            lines.append("    ACTION: Manual review needed")
+        # Collisions
+        if collisions:
+            lines.append("  COLLISION (multiple episodes match within 10s):")
+            for result in collisions:
+                lines.append(f"    • {result.file.filename} ({format_duration(result.file.duration_seconds)})")
+                for i, (candidate, delta) in enumerate(result.all_candidates[:3], 1):
+                    delta_str = format_duration(delta)
+                    mark = "→ SELECTED" if i == 1 else "  alternative"
+                    lines.append(
+                        f"      {i}. S{candidate.season:02d}E{candidate.episode:02d} "
+                        f"({candidate.title}) [Δ {delta_str}] {mark}"
+                    )
             lines.append("")
+
+        # Medium confidence
+        if medium_conf:
+            lines.append("  MEDIUM CONFIDENCE (30s < Δ ≤120s) — May need review:")
+            for result in medium_conf:
+                target_dur = format_duration(result.matched_episode.runtime_seconds)
+                delta_str = format_duration(result.delta_seconds)
+                lines.append(
+                    f"    • {result.file.filename} → "
+                    f"S{result.matched_episode.season:02d}E{result.matched_episode.episode:02d} "
+                    f"[Δ {delta_str}] ({target_dur})"
+                )
+            lines.append("")
+
+        # Low confidence
+        if low_conf:
+            lines.append("  LOW CONFIDENCE (Δ >120s) — Likely wrong, needs manual review:")
+            for result in low_conf:
+                target_dur = format_duration(result.matched_episode.runtime_seconds)
+                delta_str = format_duration(result.delta_seconds)
+                lines.append(
+                    f"    • {result.file.filename} → "
+                    f"S{result.matched_episode.season:02d}E{result.matched_episode.episode:02d} "
+                    f"[Δ {delta_str}] ({target_dur})"
+                )
+            lines.append("")
+
+        lines.append("    ACTION: Review flagged files and provide corrections")
+        lines.append("")
     else:
-        lines.append("✓ No ambiguous matches detected")
+        lines.append("✓ No flagged files — all matches are high confidence")
         lines.append("")
 
     # Unmatched files section
@@ -119,18 +158,19 @@ def generate_text_report(
     lines.append("SUMMARY")
     lines.append("-" * 80)
     lines.append(f"  Total files: {len(results)}")
-    lines.append(f"  ✓ HIGH confidence (≤30s): {len(high_conf)}")
-    lines.append(f"  ⚠ MEDIUM confidence (≤120s): {len(medium_conf)}")
-    lines.append(f"  ⚠ LOW confidence (>120s): {len(low_conf)}")
+    lines.append(f"  ✓ HIGH confidence (Δ ≤30s): {len(high_conf)}")
+    lines.append(f"  ⚠ MEDIUM confidence (30s < Δ ≤120s): {len(medium_conf)}")
+    lines.append(f"  ⚠ LOW confidence (Δ >120s): {len(low_conf)}")
     lines.append(f"  ❌ Unmatched: {len(no_match)}")
-    lines.append(f"  ⚠ Ambiguous: {len(ambiguous)}")
+    lines.append(f"  🚩 Collisions (multiple matches): {len(collisions)}")
 
-    if no_match or ambiguous:
+    if no_match or flagged:
         lines.append("")
-        lines.append("ACTION REQUIRED: Review unmatched and ambiguous files before applying mapping")
+        lines.append("⚠️ ACTION REQUIRED: Review flagged/unmatched files")
+        lines.append("   Provide corrections via: 'file.mkv -> S##E## (title)'")
     else:
         lines.append("")
-        lines.append("✓ Ready to apply mapping")
+        lines.append("✓ All matches verified — ready to apply")
 
     lines.append("=" * 80)
 
