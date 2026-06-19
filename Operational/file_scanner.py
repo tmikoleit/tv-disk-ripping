@@ -23,7 +23,7 @@ def get_mkv_duration_ffprobe(filepath: Path) -> Optional[int]:
                 'ffprobe',
                 '-v', 'error',
                 '-show_entries', 'format=duration',
-                '-of', 'default=noprint_wrappers=1:nokey=1:nokey_wrappers=1',
+                '-of', 'csv=p=0',
                 str(filepath)
             ],
             capture_output=True,
@@ -33,10 +33,11 @@ def get_mkv_duration_ffprobe(filepath: Path) -> Optional[int]:
 
         if result.returncode == 0:
             duration_str = result.stdout.strip()
-            return int(float(duration_str))
-        else:
-            log.debug(f"ffprobe failed for {filepath.name}")
-            return None
+            if duration_str:
+                return int(float(duration_str))
+
+        log.debug(f"ffprobe failed for {filepath.name}")
+        return None
 
     except FileNotFoundError:
         log.debug("ffprobe not available in PATH")
@@ -152,3 +153,5 @@ def scan_disk_folder(disk_path: Path) -> List[Tuple[str, int, float]]:
         fallback_count = len(mkv_files) - extracted
         log.info(f"⚠️ Extracted duration for {extracted}/{len(mkv_files)} files")
         log.info(f"   Will use file size as secondary matcher for {fallback_count} files")
+
+    return files
