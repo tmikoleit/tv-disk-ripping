@@ -26,6 +26,7 @@ import matcher
 from matcher import match_files_greedy
 import reporting
 import correction
+import organizer
 from config import BASE_DIR, TMDB_API_KEY
 
 # Configure logging
@@ -69,15 +70,25 @@ def process_single_disk(
     season: int,
     disk: int,
     preview: bool = False,
+    auto_move: bool = False,
 ) -> None:
     """
     Process a single disk: lookup, match, generate report and mapping.
+
+    Workflow:
+    1. Lookup disc info and episodes
+    2. Scan ripped files
+    3. Match files to episodes (greedy algorithm with collision detection)
+    4. Generate report (pauses if collisions detected)
+    5. If no collisions: rename files AND move to Completed folder
+    6. If collisions: require user to apply corrections via --correct flag
 
     Args:
         show: Show name
         season: Season number
         disk: Disk number
         preview: If True, don't write files
+        auto_move: Internal flag, not used in CLI (always move if no collisions)
     """
     show_path = BASE_DIR / show
     disk_path = show_path / f"Season {season}" / f"Disk {disk}"
@@ -163,12 +174,20 @@ def process_single_disk(
     report_text = reporting.generate_text_report(results, show, season, disk, collisions=collisions)
     click.echo(report_text)
 
-    # Step 5: Save files
+    # Step 5: Check for collisions
+    if collisions:
+        click.echo(f"\n❌ COLLISION DETECTED — Cannot proceed")
+        click.echo(f"   Resolve using: python process_rips.py {show} {season} {disk} --correct")
+        click.echo(f"{'=' * 80}\n")
+        return
+
+    # Step 6: Save mapping and rename/move files (atomic)
     if preview:
         click.echo(f"\n[PREVIEW MODE - No files written]\n")
     else:
-        click.echo(f"\n💾 Saving files...")
+        click.echo(f"\n💾 Saving and organizing files...")
 
+        # Save report and mapping
         report_path = reporting.save_report(report_text, show, season, disk, BASE_DIR / show)
         click.echo(f"   Report: {report_path.relative_to(BASE_DIR)}")
 
@@ -176,8 +195,32 @@ def process_single_disk(
         mapping_path = reporting.save_mapping_json(mapping, show, season, disk, BASE_DIR / show)
         click.echo(f"   Mapping: {mapping_path.relative_to(BASE_DIR)}")
 
+        # Rename files (in working directory)
+        click.echo(f"\n🎬 Renaming files...")
+        for result in results:
+            if result.matched_episode:
+                old_path = disk_path / result.file.filename
+                new_name = mapping.get(result.file.filename)
+                if new_name:
+                    new_path = disk_path / new_name
+                    if old_path.exists():
+                        new_path.write_bytes(old_path.read_bytes())
+                        old_path.unlink()
+                        click.echo(f"   ✓ {result.file.filename} → {new_name}")
+
+        # Move to Completed folder
+        click.echo(f"\n📦 Moving to Completed folder...")
+        premiere_year = disc_lookup.get_show_premiere_year(show, TMDB_API_KEY)
+        move_result = organizer.move_to_completed(
+            show, season, disk, premiere_year, BASE_DIR
+        )
+        click.echo(f"   Moved: {move_result['files_moved']} files")
+        if move_result['removed_empty_dirs']:
+            click.echo(f"   Cleaned up {len(move_result['removed_empty_dirs'])} empty directories")
+        click.echo(f"   Destination: {move_result['completed_path'].relative_to(BASE_DIR)}")
+
     click.echo(f"\n{'=' * 80}")
-    click.echo(f"Ready for next step")
+    click.echo(f"✓ Complete — Files ready for Plex")
     click.echo(f"{'=' * 80}\n")
 
 

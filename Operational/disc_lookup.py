@@ -362,6 +362,60 @@ def get_dvdcompare_episodes(
         return None
 
 
+def get_show_premiere_year(
+    show: str,
+    api_key: Optional[str] = None,
+) -> Optional[int]:
+    """
+    Get the show's premiere year from TMDb.
+
+    Args:
+        show: Show name
+        api_key: TMDb API key (uses TMDB_API_KEY env var if not provided)
+
+    Returns:
+        Year show premiered (e.g., 2009), or None if lookup failed
+    """
+    api_key = api_key or TMDB_API_KEY
+    if not api_key:
+        log.error("TMDB_API_KEY not set. Set environment variable or pass as parameter.")
+        return None
+
+    try:
+        # Search for show
+        search_url = "https://api.themoviedb.org/3/search/tv"
+        search_params = {
+            "api_key": api_key,
+            "query": show,
+        }
+        search_response = requests.get(search_url, params=search_params, timeout=10)
+        search_response.raise_for_status()
+
+        results = search_response.json().get("results", [])
+        if not results:
+            log.warning(f"Show '{show}' not found on TMDb.")
+            return None
+
+        # Get first result's premiere date
+        first_result = results[0]
+        premiere_date = first_result.get("first_air_date")
+
+        if premiere_date:
+            year = int(premiere_date.split("-")[0])
+            log.info(f"Show premiere year: {year}")
+            return year
+        else:
+            log.warning(f"No premiere date found for {show}")
+            return None
+
+    except requests.RequestException as e:
+        log.error(f"TMDb API error: {e}")
+        return None
+    except (KeyError, ValueError, IndexError) as e:
+        log.error(f"Error parsing TMDb response: {e}")
+        return None
+
+
 def get_tmdb_episodes(
     show: str,
     season: int,
