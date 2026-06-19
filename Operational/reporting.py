@@ -66,8 +66,8 @@ def generate_text_report(
         and r.all_candidates[0][1] <= 10
     ]
 
-    # Flagged files: collisions + medium/low confidence
-    flagged = set(collisions) | set(medium_conf) | set(low_conf)
+    # Flagged files: collisions + medium/low confidence (as list, avoiding set issues)
+    flagged_files = collisions + medium_conf + low_conf
 
     # Matched files section
     lines.append("MATCHED FILES")
@@ -81,7 +81,7 @@ def generate_text_report(
                 target_dur = format_duration(result.matched_episode.runtime_seconds)
                 delta_str = format_duration(result.delta_seconds)
 
-                flag = "⚠️ " if result in flagged else "✓ "
+                flag = "⚠️ " if result in flagged_files else "✓ "
                 confidence_badge = result.confidence.upper()
                 lines.append(
                     f"  {flag}[{confidence_badge}] {result.file.filename}"
@@ -93,7 +93,7 @@ def generate_text_report(
     lines.append("")
 
     # Flagged matches section
-    if flagged:
+    if flagged_files:
         lines.append("🚩 FLAGGED FOR REVIEW")
         lines.append("-" * 80)
 
@@ -164,7 +164,7 @@ def generate_text_report(
     lines.append(f"  ❌ Unmatched: {len(no_match)}")
     lines.append(f"  🚩 Collisions (multiple matches): {len(collisions)}")
 
-    if no_match or flagged:
+    if no_match or flagged_files:
         lines.append("")
         lines.append("⚠️ ACTION REQUIRED: Review flagged/unmatched files")
         lines.append("   Provide corrections via: 'file.mkv -> S##E## (title)'")
