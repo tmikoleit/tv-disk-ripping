@@ -11,8 +11,14 @@ Usage:
 import click
 import logging
 import sys
+import io
 from pathlib import Path
 from typing import List, Tuple
+
+# Fix Unicode on Windows
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import disc_lookup
 import file_scanner
@@ -105,8 +111,21 @@ def process_single_disk(
     ripped_files = file_scanner.scan_disk_folder(disk_path)
 
     if not ripped_files:
-        click.echo(f"❌ No MKV files found in {disk_path}")
-        sys.exit(1)
+        click.echo(f"⚠️ Could not extract durations from MKV files")
+        click.echo(f"   Falling back to TMDb episode durations as proxies...\n")
+
+        # Use sorted MKV files with TMDb durations as fallback
+        mkv_files = sorted(disk_path.glob("*.mkv"))
+        if not mkv_files:
+            click.echo(f"❌ No MKV files found in {disk_path}")
+            sys.exit(1)
+
+        # Assign TMDb durations to files in order
+        ripped_files = [
+            (mkv.name, episodes[i].runtime_seconds if i < len(episodes) else 2700)
+            for i, mkv in enumerate(mkv_files)
+        ]
+        click.echo(f"⚠️ Using episode runtimes from TMDb as file durations (may be approximate)\n")
 
     click.echo(f"✓ Found {len(ripped_files)} MKV files\n")
 

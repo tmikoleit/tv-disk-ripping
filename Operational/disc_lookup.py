@@ -93,16 +93,30 @@ def _save_to_cache(cache_key: str, info: DiscInfo) -> None:
         log.warning(f"Error writing cache: {e}")
 
 
+def _load_disc_database() -> dict:
+    """Load disc episode mapping from local file."""
+    db_file = Path(__file__).parent / "disc_data.json"
+    if db_file.exists():
+        try:
+            return json.loads(db_file.read_text())
+        except Exception as e:
+            log.debug(f"Error reading disc_data.json: {e}")
+    return {}
+
+
 def get_disc_episodes_from_dvdcompare(
     show: str,
     season: int,
     disk: int,
 ) -> Optional[DiscInfo]:
     """
-    Look up which episodes are on this disk from dvdcompare.net
+    Look up which episodes are on this disk.
 
-    Uses dvdcompare-scraper library to query disc metadata.
-    Caches results locally for 24 hours.
+    Tries methods in order:
+    1. Local cache (24-hour TTL)
+    2. dvdcompare-scraper library (if installed)
+    3. Local disc_data.json database
+    4. Manual user input (TODO)
 
     Args:
         show: Show name
@@ -112,66 +126,77 @@ def get_disc_episodes_from_dvdcompare(
     Returns:
         DiscInfo with episode list, or None if lookup failed
     """
-    log.info(f"Looking up {show} Season {season} Disk {disk} on dvdcompare.net...")
+    log.info(f"Looking up {show} Season {season} Disk {disk}...")
 
     cache_key = _cache_key(show, season, disk)
 
     # Try cache first
     cached = _load_from_cache(cache_key)
     if cached:
-        log.info(f"Using cached disc info: {', '.join(map(str, cached.episodes))}")
+        log.info(f"Using cached disc info: episodes {cached.episodes}")
         return cached
 
+    # Try dvdcompare-scraper
     try:
-        # Import here to avoid hard dependency if library isn't installed
         from dvdcompare_scraper import search
-
-        # Search for disc set
         results = search(show, season=season)
+        if results:
+            release = results[0]
+            disc_data = release.discs.get(disk)
+            if disc_data:
+                episodes = []
+                for item in disc_data.items:
+                    if hasattr(item, 'episode') and item.episode is not None:
+                        episodes.append(item.episode)
+                if episodes:
+                    info = DiscInfo(
+                        show=show,
+                        season=season,
+                        disk=disk,
+                        episodes=sorted(episodes),
+                        source="dvdcompare"
+                    )
+                    _save_to_cache(cache_key, info)
+                    log.info(f"Found episodes on Disk {disk}: {', '.join(map(str, info.episodes))}")
+                    return info
+    except (ImportError, Exception):
+        pass
 
-        if not results:
-            log.warning(f"No results for {show} Season {season}")
-            return None
+    # Try local disc_data.json
+    db = _load_disc_database()
+    show_key = show.lower().replace(' ', '-')
+    if show_key in db and str(season) in db[show_key]:
+        if str(disk) in db[show_key][str(season)]:
+            episodes = db[show_key][str(season)][str(disk)]
+            info = DiscInfo(
+                show=show,
+                season=season,
+                disk=disk,
+                episodes=sorted(episodes),
+                source="local_db"
+            )
+            _save_to_cache(cache_key, info)
+            log.info(f"Found episodes on Disk {disk}: {', '.join(map(str, info.episodes))}")
+            return info
 
-        # Get first result (most likely match)
-        release = results[0]
-        log.debug(f"Found release: {release}")
+    # Fallback: check if key exists with original case
+    if show in db and str(season) in db[show]:
+        if str(disk) in db[show][str(season)]:
+            episodes = db[show][str(season)][str(disk)]
+            info = DiscInfo(
+                show=show,
+                season=season,
+                disk=disk,
+                episodes=sorted(episodes),
+                source="local_db"
+            )
+            _save_to_cache(cache_key, info)
+            log.info(f"Found episodes on Disk {disk}: {', '.join(map(str, info.episodes))}")
+            return info
 
-        # Get episodes for this disk
-        disc_data = release.discs.get(disk)
-        if not disc_data:
-            log.warning(f"Disk {disk} not found in release")
-            return None
-
-        # Extract episode numbers from disc
-        episodes = []
-        for item in disc_data.items:
-            if hasattr(item, 'episode') and item.episode is not None:
-                episodes.append(item.episode)
-
-        if not episodes:
-            log.warning(f"No episodes found on Disk {disk}")
-            return None
-
-        info = DiscInfo(
-            show=show,
-            season=season,
-            disk=disk,
-            episodes=sorted(episodes),
-            release_region=release.region if hasattr(release, 'region') else None,
-            source="dvdcompare"
-        )
-
-        _save_to_cache(cache_key, info)
-        log.info(f"Found episodes on Disk {disk}: {', '.join(map(str, info.episodes))}")
-        return info
-
-    except ImportError:
-        log.error("dvdcompare-scraper not installed. Install: pip install dvdcompare-scraper")
-        return None
-    except Exception as e:
-        log.error(f"dvdcompare lookup failed: {e}")
-        return None
+    log.error(f"Could not find episode info for {show} S{season:02d}D{disk:02d}")
+    log.error(f"Add manual mapping to disc_data.json or install dvdcompare-scraper")
+    return None
 
 
 def get_tmdb_episodes(

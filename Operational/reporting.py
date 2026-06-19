@@ -197,7 +197,7 @@ def save_report(
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     report_path = reports_dir / f"S{season:02d}D{disk:02d}_report.txt"
-    report_path.write_text(report_text)
+    report_path.write_text(report_text, encoding='utf-8')
 
     log.info(f"Report saved to: {report_path}")
     return report_path
@@ -249,7 +249,7 @@ def save_mapping_json(
     mappings_dir.mkdir(parents=True, exist_ok=True)
 
     mapping_path = mappings_dir / f"S{season:02d}D{disk:02d}.json"
-    mapping_path.write_text(json.dumps(mapping, indent=2))
+    mapping_path.write_text(json.dumps(mapping, indent=2), encoding='utf-8')
 
     log.info(f"Mapping saved to: {mapping_path}")
     return mapping_path
